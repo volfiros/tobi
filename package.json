@@ -1,0 +1,26 @@
+{
+  "name": "tobi",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev --local --port 8787",
+    "build": "tsc --noEmit",
+    "lint": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "verify": "bun run build && bun test"
+  },
+  "dependencies": {
+    "@google/genai": "^1.31.0",
+    "hono": "^4.10.6",
+    "zod": "^4.1.13"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20260514.0",
+    "@types/node": "^24.10.1",
+    "typescript": "^5.9.3",
+    "vitest": "^4.0.13",
+    "wrangler": "^4.50.0"
+  }
+}

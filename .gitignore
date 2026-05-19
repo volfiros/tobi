@@ -1,0 +1,24 @@
+.DS_Store
+node_modules/
+dist/
+.wrangler/
+.dev.vars
+.env
+.env.*
+!.env.example
+coverage/
+
+# Agent planning and execution artifacts
+.agent-artifacts/
+docs/superpowers/plans/
+.subagents/
+.codex-run/
+.stitch-scratch/
+.playwright-mcp/
+*.agent.log
+*.subagent.log
+tobi-dashboard-*.png
+
+# Generated design artifacts; keep design/README.md trackable.
+design/generated/
+design/screenshots/

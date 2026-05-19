@@ -1,0 +1,33 @@
+name = "tobi"
+main = "src/index.ts"
+compatibility_date = "2026-05-19"
+
+[vars]
+APP_ENV = "development"
+PUBLIC_APP_URL = "http://localhost:8787"
+DEFAULT_CURRENCY = "INR"
+DEMO_SHOP_ID = "shop_demo"
+DEMO_SHOP_NAME = "Tobi Demo Print Shop"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "tobi-demo-db"
+database_id = "local-demo"
+migrations_dir = "src/db/migrations"
+
+[[r2_buckets]]
+binding = "FILES"
+bucket_name = "tobi-demo-files"
+
+[[kv_namespaces]]
+binding = "SESSIONS"
+id = "local-demo"
+
+[[queues.producers]]
+binding = "JOB_QUEUE"
+queue = "tobi-demo-jobs"
+
+[[queues.consumers]]
+queue = "tobi-demo-jobs"
+max_batch_size = 10
+max_batch_timeout = 5
