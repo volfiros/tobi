@@ -110,6 +110,7 @@ export class MemoryTobiStore implements TobiStore {
       id: createId("ord"),
       publicId: createPublicOrderId(),
       customerId: input.customerId,
+      customerWhatsappNumber: this.customers.get(input.customerId)?.whatsappNumber ?? null,
       shopId: input.shopId,
       status: "DRAFT",
       currency: "INR",
@@ -330,7 +331,7 @@ export class D1TobiStore extends MemoryTobiStore {
   override async findActiveOrder(customerId: string): Promise<Order | null> {
     const row = await this.db
       .prepare(
-        "SELECT * FROM orders WHERE customer_id = ?1 AND status NOT IN ('COMPLETED', 'CANCELLED', 'FAILED') ORDER BY updated_at DESC LIMIT 1"
+        `${orderSelectSql()} WHERE orders.customer_id = ?1 AND orders.status NOT IN ('COMPLETED', 'CANCELLED', 'FAILED') ORDER BY orders.updated_at DESC LIMIT 1`
       )
       .bind(customerId)
       .first<OrderRow>();
@@ -339,10 +340,12 @@ export class D1TobiStore extends MemoryTobiStore {
 
   override async createOrder(input: { customerId: string; shopId: string }): Promise<Order> {
     const timestamp = nowIso();
+    const customer = await this.db.prepare("SELECT * FROM customers WHERE id = ?1").bind(input.customerId).first<CustomerRow>();
     const order: Order = {
       id: createId("ord"),
       publicId: createPublicOrderId(),
       customerId: input.customerId,
+      customerWhatsappNumber: customer?.whatsapp_number ?? null,
       shopId: input.shopId,
       status: "DRAFT",
       currency: "INR",
@@ -381,17 +384,17 @@ export class D1TobiStore extends MemoryTobiStore {
   }
 
   override async getOrder(orderId: string): Promise<Order | null> {
-    const row = await this.db.prepare("SELECT * FROM orders WHERE id = ?1").bind(orderId).first<OrderRow>();
+    const row = await this.db.prepare(`${orderSelectSql()} WHERE orders.id = ?1`).bind(orderId).first<OrderRow>();
     return row ? this.hydrateOrder(row) : null;
   }
 
   override async getOrderByPublicId(publicId: string): Promise<Order | null> {
-    const row = await this.db.prepare("SELECT * FROM orders WHERE public_id = ?1").bind(publicId).first<OrderRow>();
+    const row = await this.db.prepare(`${orderSelectSql()} WHERE orders.public_id = ?1`).bind(publicId).first<OrderRow>();
     return row ? this.hydrateOrder(row) : null;
   }
 
   override async listOrders(): Promise<Order[]> {
-    const result = await this.db.prepare("SELECT * FROM orders ORDER BY created_at DESC").all<OrderRow>();
+    const result = await this.db.prepare(`${orderSelectSql()} ORDER BY orders.created_at DESC`).all<OrderRow>();
     return Promise.all(result.results.map((row) => this.hydrateOrder(row)));
   }
 
@@ -542,6 +545,7 @@ type OrderRow = {
   id: string;
   public_id: string;
   customer_id: string;
+  customer_whatsapp_number: string | null;
   shop_id: string;
   status: OrderStatus;
   currency: "INR";
@@ -598,6 +602,7 @@ function rowToOrder(row: OrderRow, files: OrderFile[]): Order {
     id: row.id,
     publicId: row.public_id,
     customerId: row.customer_id,
+    customerWhatsappNumber: row.customer_whatsapp_number,
     shopId: row.shop_id,
     status: row.status,
     currency: row.currency,
@@ -614,6 +619,10 @@ function rowToOrder(row: OrderRow, files: OrderFile[]): Order {
     createdAt: row.created_at,
     updatedAt: row.updated_at
   };
+}
+
+function orderSelectSql(): string {
+  return "SELECT orders.*, customers.whatsapp_number AS customer_whatsapp_number FROM orders LEFT JOIN customers ON customers.id = orders.customer_id";
 }
 
 function rowToOrderFile(row: OrderFileRow): OrderFile {

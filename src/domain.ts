@@ -95,6 +95,7 @@ export type Order = {
   id: string;
   publicId: string;
   customerId: string;
+  customerWhatsappNumber: string | null;
   shopId: string;
   status: OrderStatus;
   currency: "INR";

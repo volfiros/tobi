@@ -4,15 +4,25 @@ import type { Order, OrderStatus, PrintOptions } from "./domain";
 import { calculateQuote, formatPaise } from "./services/pricing";
 import { createAIProvider } from "./services/extraction";
 import { RazorpayPaymentService } from "./services/razorpay";
-import { canTransition, nextMissingField, questionForMissingField } from "./services/stateMachine";
-import { parseInboundWhatsApp, twimlMessage, verifyTwilioSignature } from "./services/whatsapp";
+import {
+  canTransition,
+  nextMissingField,
+  questionForMissingField,
+} from "./services/stateMachine";
+import {
+  parseInboundWhatsApp,
+  twimlMessage,
+  verifyTwilioSignature,
+} from "./services/whatsapp";
 import { createStore, type TobiStore } from "./store";
 
 type AppVariables = {
   store: TobiStore;
 };
 
-export function createApp(store?: TobiStore): Hono<{ Bindings: Env; Variables: AppVariables }> {
+export function createApp(
+  store?: TobiStore,
+): Hono<{ Bindings: Env; Variables: AppVariables }> {
   const app = new Hono<{ Bindings: Env; Variables: AppVariables }>();
 
   app.use("*", async (context, next) => {
@@ -24,19 +34,28 @@ export function createApp(store?: TobiStore): Hono<{ Bindings: Env; Variables: A
     context.json({
       ok: true,
       service: "tobi",
-      environment: context.env.APP_ENV ?? "test"
-    })
+      environment: context.env.APP_ENV ?? "test",
+    }),
   );
 
-  app.get("/demo/sample.pdf", () =>
-    new Response("%PDF-1.7\n1 0 obj\n<< /Type /Page >>\nendobj\n2 0 obj\n<< /Type /Page >>\nendobj\n%%EOF", {
-      headers: { "content-type": "application/pdf" }
-    })
+  app.get(
+    "/demo/sample.pdf",
+    () =>
+      new Response(
+        "%PDF-1.7\n1 0 obj\n<< /Type /Page >>\nendobj\n2 0 obj\n<< /Type /Page >>\nendobj\n%%EOF",
+        {
+          headers: { "content-type": "application/pdf" },
+        },
+      ),
   );
 
   app.post("/webhooks/whatsapp", async (context) => {
     if (context.env.TWILIO_AUTH_TOKEN) {
-      const verified = await verifyTwilioSignature(context.req.raw, context.env.TWILIO_AUTH_TOKEN, context.env.PUBLIC_APP_URL);
+      const verified = await verifyTwilioSignature(
+        context.req.raw,
+        context.env.TWILIO_AUTH_TOKEN,
+        context.env.PUBLIC_APP_URL,
+      );
       if (!verified) return context.text("Invalid Twilio signature", 401);
     } else if (context.env.APP_ENV === "production") {
       return context.text("TWILIO_AUTH_TOKEN is required in production", 500);
@@ -53,24 +72,41 @@ export function createApp(store?: TobiStore): Hono<{ Bindings: Env; Variables: A
       providerMessageId: inbound.providerMessageId,
       body: inbound.body,
       mediaCount: inbound.media.length,
-      rawPayloadJson: JSON.stringify(inbound.raw)
+      rawPayloadJson: JSON.stringify(inbound.raw),
     });
-    if (inboundMessage.duplicate) return twimlMessage("Already received this message.");
-    const customer = await store.upsertCustomer({ whatsappNumber: inbound.from });
-    let order = (await store.findActiveOrder(customer.id)) ?? (await store.createOrder({ customerId: customer.id, shopId: context.env.DEMO_SHOP_ID ?? "shop_demo" }));
+    if (inboundMessage.duplicate)
+      return twimlMessage("Already received this message.");
+    const customer = await store.upsertCustomer({
+      whatsappNumber: inbound.from,
+    });
+    const activeOrder = await store.findActiveOrder(customer.id);
+    const inboundHasPdf = inbound.media.some((media) =>
+      media.contentType.includes("pdf"),
+    );
+    let order = shouldReuseActiveOrder(activeOrder, inboundHasPdf)
+      ? activeOrder
+      : await store.createOrder({
+        customerId: customer.id,
+        shopId: context.env.DEMO_SHOP_ID ?? "shop_demo",
+      });
     await store.attachMessageToOrder(inboundMessage.message.id, order.id);
 
     try {
       for (const [index, media] of inbound.media.entries()) {
         if (!media.contentType.includes("pdf")) continue;
-        const stored = await storeInboundPdf(context.env, media.url, `orders/${order.id}/upload-${index + 1}.pdf`, media.contentType);
+        const stored = await storeInboundPdf(
+          context.env,
+          media.url,
+          `orders/${order.id}/upload-${index + 1}.pdf`,
+          media.contentType,
+        );
         await store.addOrderFile({
           orderId: order.id,
           originalFilename: media.filename ?? `upload-${index + 1}.pdf`,
           mimeType: media.contentType,
           r2Key: stored.r2Key,
           pageCount: media.pageCount ?? stored.pageCount,
-          fileSizeBytes: media.sizeBytes ?? stored.fileSizeBytes
+          fileSizeBytes: media.sizeBytes ?? stored.fileSizeBytes,
         });
       }
     } catch (error) {
@@ -80,7 +116,10 @@ export function createApp(store?: TobiStore): Hono<{ Bindings: Env; Variables: A
 
     order = (await store.getOrder(order.id)) ?? order;
     const ai = createAIProvider(context.env);
-    const extraction = await ai.extractPrintOrder({ body: inbound.body, hasFile: order.files.length > 0 });
+    const extraction = await ai.extractPrintOrder({
+      body: inbound.body,
+      hasFile: order.files.length > 0,
+    });
     order = await store.updatePrintOptions(order.id, {
       copies: extraction.copies ?? order.printOptions.copies,
       colorMode: extraction.colorMode ?? order.printOptions.colorMode,
@@ -90,7 +129,9 @@ export function createApp(store?: TobiStore): Hono<{ Bindings: Env; Variables: A
       fulfillmentType: "pickup",
       pickupTime: extraction.pickupTime ?? order.printOptions.pickupTime,
       pageCount: extraction.pageCount ?? order.printOptions.pageCount,
-      specialInstructions: extraction.specialInstructions ?? order.printOptions.specialInstructions
+      specialInstructions:
+        extraction.specialInstructions ??
+        order.printOptions.specialInstructions,
     });
 
     const missing = nextMissingField({
@@ -98,25 +139,30 @@ export function createApp(store?: TobiStore): Hono<{ Bindings: Env; Variables: A
       copies: order.printOptions.copies,
       colorMode: order.printOptions.colorMode,
       sideMode: order.printOptions.sideMode,
-      pageCount: order.printOptions.pageCount
+      pageCount: order.printOptions.pageCount,
     });
 
     if (missing) {
-      await store.transitionOrder(order.id, missing === "file" ? "AWAITING_FILE" : "AWAITING_DETAILS");
+      await store.transitionOrder(
+        order.id,
+        missing === "file" ? "AWAITING_FILE" : "AWAITING_DETAILS",
+      );
       await store.markMessageProcessed(inboundMessage.message.id, "completed");
       return twimlMessage(questionForMissingField(missing));
     }
 
     const quote = calculateQuote({ options: order.printOptions });
     order = await store.setQuote(order.id, quote);
-    const payment = await new RazorpayPaymentService(context.env).createPaymentRequest(order);
+    const payment = await new RazorpayPaymentService(
+      context.env,
+    ).createPaymentRequest(order);
     order = await store.setPaymentRequest(order.id, payment);
     const reply = [
       `Quote for ${order.publicId}`,
       `${quote.pages} pages x ${quote.copies} copies, ${label(order.printOptions.colorMode)}, ${label(order.printOptions.sideMode)}, ${order.printOptions.paperSize}`,
       `Binding: ${label(order.printOptions.bindingType)}`,
       `Total: ${formatPaise(quote.totalPaise)}`,
-      `Pay here: ${payment.paymentLink}`
+      `Pay here: ${payment.paymentLink}`,
     ].join("\n");
 
     await store.createMessage({
@@ -128,7 +174,7 @@ export function createApp(store?: TobiStore): Hono<{ Bindings: Env; Variables: A
       providerMessageId: null,
       body: reply,
       mediaCount: 0,
-      rawPayloadJson: "{}"
+      rawPayloadJson: "{}",
     });
     await store.markMessageProcessed(inboundMessage.message.id, "completed");
     return twimlMessage(reply);
@@ -139,9 +185,17 @@ export function createApp(store?: TobiStore): Hono<{ Bindings: Env; Variables: A
     const paymentService = new RazorpayPaymentService(context.env);
     const event = await paymentService.verifyWebhook(context.req.raw);
     const result = await store.applyPaymentEvent(event);
-    await store.addOrderEvent(result.order.id, result.duplicate ? "payment_webhook_duplicate" : "payment_webhook_applied", event);
+    await store.addOrderEvent(
+      result.order.id,
+      result.duplicate
+        ? "payment_webhook_duplicate"
+        : "payment_webhook_applied",
+      event,
+    );
     if (!result.duplicate && result.order.status === "PAID") {
-      const notificationClaim = await store.claimShopNotification(result.order.id);
+      const notificationClaim = await store.claimShopNotification(
+        result.order.id,
+      );
       if (notificationClaim.claimed) {
         await createShopNotification(store, notificationClaim.order);
         await createCustomerPaymentConfirmation(store, notificationClaim.order);
@@ -151,15 +205,24 @@ export function createApp(store?: TobiStore): Hono<{ Bindings: Env; Variables: A
   });
 
   app.get("/orders/:publicId", async (context) => {
-    const order = await context.get("store").getOrderByPublicId(context.req.param("publicId"));
+    const order = await context
+      .get("store")
+      .getOrderByPublicId(context.req.param("publicId"));
     if (!order) return context.notFound();
     return context.json(publicOrder(order));
   });
 
   app.get("/demo/pay/:publicId", async (context) => {
-    const order = await context.get("store").getOrderByPublicId(context.req.param("publicId"));
+    const order = await context
+      .get("store")
+      .getOrderByPublicId(context.req.param("publicId"));
     if (!order) return context.notFound();
-    return context.html(pageShell("Demo payment", `<section class="panel narrow"><h1>Razorpay Test Payment</h1><p>${order.publicId}</p><p class="amount">${formatPaise(order.totalPaise)}</p><p>This fallback page appears when Razorpay credentials are not configured. Use the webhook fixture in tests or configure Razorpay Test Mode for a real sandbox link.</p></section>`));
+    return context.html(
+      pageShell(
+        "Demo payment",
+        `<section class="panel narrow"><h1>Razorpay Test Payment</h1><p>${order.publicId}</p><p class="amount">${formatPaise(order.totalPaise)}</p><p>This fallback page appears when Razorpay credentials are not configured. Use the webhook fixture in tests or configure Razorpay Test Mode for a real sandbox link.</p></section>`,
+      ),
+    );
   });
 
   app.get("/", (context) => context.redirect("/dashboard/orders"));
@@ -170,19 +233,25 @@ export function createApp(store?: TobiStore): Hono<{ Bindings: Env; Variables: A
     if (pin !== (context.env.ADMIN_PIN ?? "123456")) {
       return context.html(loginPage("Invalid PIN"), 401);
     }
-    setCookie(context, "tobi_admin", context.env.ADMIN_SESSION_TOKEN ?? "dev-session", {
-      httpOnly: true,
-      sameSite: "Lax",
-      path: "/dashboard",
-      secure: context.env.APP_ENV === "production"
-    });
+    setCookie(
+      context,
+      "tobi_admin",
+      context.env.ADMIN_SESSION_TOKEN ?? "dev-session",
+      {
+        httpOnly: true,
+        sameSite: "Lax",
+        path: "/dashboard",
+        secure: context.env.APP_ENV === "production",
+      },
+    );
     return context.redirect("/dashboard/orders");
   });
 
   app.use("/dashboard/*", async (context, next) => {
     if (context.req.path === "/dashboard/login") return next();
     const token = getCookie(context, "tobi_admin");
-    if (token !== (context.env.ADMIN_SESSION_TOKEN ?? "dev-session")) return context.redirect("/dashboard/login");
+    if (token !== (context.env.ADMIN_SESSION_TOKEN ?? "dev-session"))
+      return context.redirect("/dashboard/login");
     await next();
   });
 
@@ -200,15 +269,21 @@ export function createApp(store?: TobiStore): Hono<{ Bindings: Env; Variables: A
   app.post("/dashboard/orders/:id/status", async (context) => {
     const form = await context.req.formData();
     const status = String(form.get("status")) as OrderStatus;
-    const order = await context.get("store").transitionOrder(context.req.param("id"), status);
-    await context.get("store").addOrderEvent(order.id, "shop_status_update", { status });
+    const order = await context
+      .get("store")
+      .transitionOrder(context.req.param("id"), status);
+    await context
+      .get("store")
+      .addOrderEvent(order.id, "shop_status_update", { status });
     return context.redirect(`/dashboard/orders/${order.id}`);
   });
 
   app.get("/dashboard/orders/:id/files/:fileId/download", async (context) => {
     const order = await context.get("store").getOrder(context.req.param("id"));
     if (!order) return context.notFound();
-    const file = order.files.find((candidate) => candidate.id === context.req.param("fileId"));
+    const file = order.files.find(
+      (candidate) => candidate.id === context.req.param("fileId"),
+    );
     if (!file) return context.notFound();
     const object = await context.env.FILES.get(file.r2Key);
     if (!object) return context.notFound();
@@ -216,21 +291,33 @@ export function createApp(store?: TobiStore): Hono<{ Bindings: Env; Variables: A
       headers: {
         "content-type": file.mimeType,
         "content-disposition": `attachment; filename="${file.originalFilename ?? "document.pdf"}"`,
-        "cache-control": "private, max-age=60"
-      }
+        "cache-control": "private, max-age=60",
+      },
     });
   });
 
   return app;
 }
 
-async function createShopNotification(store: TobiStore, order: Order): Promise<void> {
+function shouldReuseActiveOrder(
+  order: Order | null,
+  inboundHasPdf: boolean,
+): order is Order {
+  if (!order) return false;
+  if (!inboundHasPdf) return true;
+  return order.status === "AWAITING_FILE" && order.files.length === 0;
+}
+
+async function createShopNotification(
+  store: TobiStore,
+  order: Order,
+): Promise<void> {
   const body = [
     `New paid print order: ${order.publicId}`,
     `Amount paid: ${formatPaise(order.totalPaise)}`,
     `Files: ${order.files.length}`,
     `Print: ${label(order.printOptions.colorMode)}, ${label(order.printOptions.sideMode)}, ${order.printOptions.paperSize}`,
-    `Pickup: ${order.printOptions.pickupTime ?? "Anytime"}`
+    `Pickup: ${order.printOptions.pickupTime ?? "Anytime"}`,
   ].join("\n");
   await store.createMessage({
     customerId: null,
@@ -241,12 +328,18 @@ async function createShopNotification(store: TobiStore, order: Order): Promise<v
     providerMessageId: null,
     body,
     mediaCount: 0,
-    rawPayloadJson: JSON.stringify({ notification: "shop_paid_order" })
+    rawPayloadJson: JSON.stringify({ notification: "shop_paid_order" }),
   });
-  await store.addOrderEvent(order.id, "shop_notified", { channel: "demo", body });
+  await store.addOrderEvent(order.id, "shop_notified", {
+    channel: "demo",
+    body,
+  });
 }
 
-async function createCustomerPaymentConfirmation(store: TobiStore, order: Order): Promise<void> {
+async function createCustomerPaymentConfirmation(
+  store: TobiStore,
+  order: Order,
+): Promise<void> {
   const body = `Payment confirmed for ${order.publicId}. The shop has received your order and will update you when it is ready.`;
   await store.createMessage({
     customerId: order.customerId,
@@ -257,9 +350,14 @@ async function createCustomerPaymentConfirmation(store: TobiStore, order: Order)
     providerMessageId: null,
     body,
     mediaCount: 0,
-    rawPayloadJson: JSON.stringify({ notification: "customer_payment_confirmed" })
+    rawPayloadJson: JSON.stringify({
+      notification: "customer_payment_confirmed",
+    }),
   });
-  await store.addOrderEvent(order.id, "customer_payment_confirmed", { channel: "demo", body });
+  await store.addOrderEvent(order.id, "customer_payment_confirmed", {
+    channel: "demo",
+    body,
+  });
 }
 
 function publicOrder(order: Order): Record<string, unknown> {
@@ -268,7 +366,7 @@ function publicOrder(order: Order): Record<string, unknown> {
     status: order.status,
     paymentStatus: order.paymentStatus,
     totalPaise: order.totalPaise,
-    pickupCode: order.pickupCode
+    pickupCode: order.pickupCode,
   };
 }
 
@@ -276,35 +374,44 @@ async function storeInboundPdf(
   env: Env,
   mediaUrl: string,
   r2Key: string,
-  contentType: string
-): Promise<{ r2Key: string; fileSizeBytes: number | null; pageCount: number | null }> {
-  if (!env.FILES) throw new Error("R2 FILES binding is required for PDF intake");
+  contentType: string,
+): Promise<{
+  r2Key: string;
+  fileSizeBytes: number | null;
+  pageCount: number | null;
+}> {
+  if (!env.FILES)
+    throw new Error("R2 FILES binding is required for PDF intake");
   let response: Response;
   try {
     response = await fetch(mediaUrl, {
-      headers: twilioMediaHeaders(env)
+      headers: twilioMediaHeaders(env),
     });
   } catch (error) {
-    throw new Error(`Unable to fetch inbound PDF media: ${error instanceof Error ? error.message : "unknown error"}`);
+    throw new Error(
+      `Unable to fetch inbound PDF media: ${error instanceof Error ? error.message : "unknown error"}`,
+    );
   }
   if (!response.ok || !response.body) {
-    throw new Error(`Unable to fetch inbound PDF media: HTTP ${response.status}`);
+    throw new Error(
+      `Unable to fetch inbound PDF media: HTTP ${response.status}`,
+    );
   }
   const bytes = new Uint8Array(await response.arrayBuffer());
   await env.FILES.put(r2Key, bytes, {
-      httpMetadata: { contentType }
+    httpMetadata: { contentType },
   });
   return {
     r2Key,
     fileSizeBytes: bytes.byteLength,
-    pageCount: countPdfPages(bytes)
+    pageCount: countPdfPages(bytes),
   };
 }
 
 function twilioMediaHeaders(env: Env): HeadersInit {
   if (!env.TWILIO_ACCOUNT_SID || !env.TWILIO_AUTH_TOKEN) return {};
   return {
-    Authorization: `Basic ${btoa(`${env.TWILIO_ACCOUNT_SID}:${env.TWILIO_AUTH_TOKEN}`)}`
+    Authorization: `Basic ${btoa(`${env.TWILIO_ACCOUNT_SID}:${env.TWILIO_AUTH_TOKEN}`)}`,
   };
 }
 
@@ -334,91 +441,268 @@ function escapeAttribute(value: unknown): string {
 function loginPage(error?: string): string {
   return pageShell(
     "Login",
-    `<section class="login-panel">
-      <div>
-        <p class="eyebrow">Tobi shop console</p>
-        <h1>Enter admin PIN</h1>
-      </div>
-      ${error ? `<p class="error">${escapeHtml(error)}</p>` : ""}
-      <form method="post" action="/dashboard/login" class="stack">
-        <label>PIN <input name="pin" type="password" inputmode="numeric" autocomplete="current-password" autofocus /></label>
-        <button type="submit">Open dashboard</button>
-      </form>
-    </section>`
+    `<div class="login-bg-glow"></div>
+    <div class="login-wrapper">
+      <header class="login-header">
+        <div class="logo">
+          <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><path d="M6 14h12v8H6z"/><path d="M6 2h12v4H6z"/></svg>
+          <span>tobi</span>
+        </div>
+        <button id="theme-toggle" class="theme-toggle" aria-label="Toggle theme" type="button">
+          <svg class="sun" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/></svg>
+          <svg class="moon" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></svg>
+        </button>
+      </header>
+      <section class="login-panel">
+        <div class="login-header-content">
+          <p class="eyebrow">Tobi shop console</p>
+          <h1>Enter admin PIN</h1>
+        </div>
+        ${error ? `<div class="error-badge"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="10"/><path d="M12 8v4M12 16h.01"/></svg> <span>${escapeHtml(error)}</span></div>` : ""}
+        <form method="post" action="/dashboard/login" class="stack">
+          <div class="input-group">
+            <label for="pin">PIN</label>
+            <div class="input-wrapper">
+              <svg class="input-icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+              <input id="pin" name="pin" type="password" inputmode="numeric" autocomplete="current-password" placeholder="••••••" autofocus />
+            </div>
+          </div>
+          <button type="submit">Open dashboard</button>
+        </form>
+      </section>
+    </div>`,
   );
 }
 
 function ordersPage(orders: Order[]): string {
   const rows = orders
-    .map(
-      (order) => `<tr>
-        <td><a href="/dashboard/orders/${escapeAttribute(order.id)}">${escapeHtml(order.publicId)}</a></td>
-        <td>${order.files.length}</td>
-        <td><span class="status ${escapeAttribute(order.status.toLowerCase())}">${escapeHtml(order.status.replaceAll("_", " "))}</span></td>
-        <td>${escapeHtml(order.paymentStatus)}</td>
-        <td>${escapeHtml(formatPaise(order.totalPaise))}</td>
-        <td>${escapeHtml(order.printOptions.pickupTime ?? "Anytime")}</td>
-        <td><a class="button secondary" href="/dashboard/orders/${escapeAttribute(order.id)}">Open</a></td>
-      </tr>`
-    )
+    .map((order) => {
+      const orderStatusLower = order.status.toLowerCase();
+      const statusLabel = order.status.replaceAll("_", " ");
+      const paymentLabel = order.paymentStatus;
+      const totalAmount = formatPaise(order.totalPaise);
+      const pickupTime = order.printOptions.pickupTime ?? "Anytime";
+      const contact = order.customerWhatsappNumber ?? "Unknown";
+
+      return `<tr>
+          <td data-label="Order"><a class="order-link" href="/dashboard/orders/${escapeAttribute(order.id)}">${escapeHtml(order.publicId)}</a></td>
+          <td data-label="Contact">
+            <span class="contact-badge">${escapeHtml(contact)}</span>
+          </td>
+          <td data-label="Files" class="num-files">
+            <div class="files-badge">
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg>
+              <span>${order.files.length}</span>
+            </div>
+          </td>
+          <td data-label="Status">
+            <span class="status-pill status-${escapeAttribute(orderStatusLower)}">
+              <span class="status-dot"></span>
+              <span>${escapeHtml(statusLabel)}</span>
+            </span>
+          </td>
+          <td data-label="Payment">
+            <span class="payment-badge payment-${escapeAttribute(order.paymentStatus.toLowerCase())}">
+              ${escapeHtml(paymentLabel)}
+            </span>
+          </td>
+          <td data-label="Total" class="amount-cell">${escapeHtml(totalAmount)}</td>
+          <td data-label="Pickup" class="pickup-cell">
+            <div class="time-badge">
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>
+              <span>${escapeHtml(pickupTime)}</span>
+            </div>
+          </td>
+          <td class="actions-cell"><a class="button secondary action-btn" href="/dashboard/orders/${escapeAttribute(order.id)}">Open</a></td>
+        </tr>`;
+    })
     .join("");
-  return `<header class="toolbar"><div><p class="eyebrow">Tobi</p><h1>Orders</h1></div><a class="button" href="/health">Health</a></header>
-    <section class="panel">
-      <table>
-        <thead><tr><th>Order</th><th>Files</th><th>Status</th><th>Payment</th><th>Total</th><th>Pickup</th><th></th></tr></thead>
-        <tbody>${rows || `<tr><td colspan="7" class="empty">No orders yet. Send a WhatsApp fixture to create one.</td></tr>`}</tbody>
-      </table>
+
+  return `<header class="toolbar">
+      <div class="brand">
+        <div class="logo">
+          <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><path d="M6 14h12v8H6z"/><path d="M6 2h12v4H6z"/></svg>
+          <span>tobi</span>
+        </div>
+        <div class="divider"></div>
+        <h1>Orders</h1>
+      </div>
+      <div class="toolbar-actions">
+        <button id="theme-toggle" class="theme-toggle" aria-label="Toggle theme" type="button">
+          <svg class="sun" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/></svg>
+          <svg class="moon" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></svg>
+        </button>
+        <a class="button health-btn" href="/health">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
+          <span>Health</span>
+        </a>
+      </div>
+    </header>
+    <section class="panel table-panel">
+      <div class="table-container">
+        <table>
+          <thead>
+            <tr>
+              <th>Order</th>
+              <th>Contact</th>
+              <th>Files</th>
+              <th>Status</th>
+              <th>Payment</th>
+              <th>Total</th>
+              <th>Pickup</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            ${rows || `<tr><td colspan="8" class="empty">No orders yet. Send a WhatsApp fixture to create one.</td></tr>`}
+          </tbody>
+        </table>
+      </div>
     </section>`;
 }
 
 function orderDetailPage(order: Order): string {
-  const statusActions: OrderStatus[] = ["ACCEPTED", "PRINTING", "READY_FOR_PICKUP", "COMPLETED", "CANCELLED"];
-  const validStatusActions = statusActions.filter((status) => canTransition(order.status, status));
+  const statusActions: OrderStatus[] = [
+    "ACCEPTED",
+    "PRINTING",
+    "READY_FOR_PICKUP",
+    "COMPLETED",
+    "CANCELLED",
+  ];
+  const validStatusActions = statusActions.filter((status) =>
+    canTransition(order.status, status),
+  );
+
   const files = order.files
-    .map(
-      (file) =>
-        `<li><strong>${escapeHtml(file.originalFilename ?? "PDF")}</strong><span>${escapeHtml(file.pageCount ?? "?")} pages</span><span>${escapeHtml(file.mimeType)}</span><a class="button secondary" href="/dashboard/orders/${escapeAttribute(order.id)}/files/${escapeAttribute(file.id)}/download">Download</a></li>`
-    )
+    .map((file) => {
+      const fileIcon = `<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg>`;
+      const downloadIcon = `<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>`;
+      return `<li>
+          <div class="file-info-group">
+            <span class="file-icon">${fileIcon}</span>
+            <div class="file-meta">
+              <strong class="file-name">${escapeHtml(file.originalFilename ?? "PDF")}</strong>
+              <span class="file-subtext">${escapeHtml(file.pageCount ?? "?")} pages • ${escapeHtml(file.mimeType)}</span>
+            </div>
+          </div>
+          <a class="button secondary download-btn" href="/dashboard/orders/${escapeAttribute(order.id)}/files/${escapeAttribute(file.id)}/download">
+            ${downloadIcon}
+            <span>Download</span>
+          </a>
+        </li>`;
+    })
     .join("");
-  return `<header class="toolbar"><div><p class="eyebrow">Order detail</p><h1>${escapeHtml(order.publicId)}</h1></div><a class="button secondary" href="/dashboard/orders">Back</a></header>
-    <main class="detail-grid">
-      <section class="panel">
-        <h2>Print options</h2>
-        <dl>
-          <dt>Copies</dt><dd>${escapeHtml(order.printOptions.copies ?? "-")}</dd>
-          <dt>Pages</dt><dd>${escapeHtml(order.printOptions.pageCount ?? "-")}</dd>
-          <dt>Color</dt><dd>${escapeHtml(label(order.printOptions.colorMode))}</dd>
-          <dt>Sides</dt><dd>${escapeHtml(label(order.printOptions.sideMode))}</dd>
-          <dt>Paper</dt><dd>${escapeHtml(order.printOptions.paperSize)}</dd>
-          <dt>Binding</dt><dd>${escapeHtml(label(order.printOptions.bindingType))}</dd>
-          <dt>Pickup</dt><dd>${escapeHtml(order.printOptions.pickupTime ?? "Anytime")}</dd>
-        </dl>
-      </section>
-      <section class="panel">
-        <h2>Payment</h2>
-        <p class="amount">${escapeHtml(formatPaise(order.totalPaise))}</p>
-        <p><span class="status ${escapeAttribute(order.status.toLowerCase())}">${escapeHtml(order.status.replaceAll("_", " "))}</span></p>
-        ${order.paymentLink ? `<p><a href="${escapeAttribute(order.paymentLink)}">Payment link</a></p>` : ""}
-        ${order.pickupCode ? `<p class="pickup">Pickup code: <strong>${escapeHtml(order.pickupCode)}</strong></p>` : ""}
-      </section>
-      <section class="panel">
-        <h2>Files</h2>
-        <ul class="file-list">${files || "<li>No PDF attached</li>"}</ul>
-      </section>
-      <section class="panel">
-        <h2>Status controls</h2>
-        <div class="actions">
-          ${
-            validStatusActions.length > 0
-              ? validStatusActions
-                  .map(
-                    (status) => `<form method="post" action="/dashboard/orders/${escapeAttribute(order.id)}/status"><input type="hidden" name="status" value="${escapeAttribute(status)}" /><button type="submit">${escapeHtml(status.replaceAll("_", " "))}</button></form>`
-                  )
-                  .join("")
-              : `<p class="muted">No status actions are available for this state.</p>`
-          }
+
+  const statusPill = `<span class="status-pill status-${escapeAttribute(order.status.toLowerCase())}">
+    <span class="status-dot"></span>
+    <span>${escapeHtml(order.status.replaceAll("_", " "))}</span>
+  </span>`;
+
+  return `<header class="toolbar">
+      <div class="brand">
+        <a class="back-link" href="/dashboard/orders" aria-label="Go back">
+          <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+        </a>
+        <div class="divider"></div>
+        <div>
+          <p class="eyebrow">Order detail</p>
+          <h1>${escapeHtml(order.publicId)}</h1>
         </div>
-      </section>
+      </div>
+      <div class="toolbar-actions">
+        <button id="theme-toggle" class="theme-toggle" aria-label="Toggle theme" type="button">
+          <svg class="sun" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/></svg>
+          <svg class="moon" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></svg>
+        </button>
+        <a class="button secondary back-btn" href="/dashboard/orders">Back</a>
+      </div>
+    </header>
+    <main class="detail-grid">
+      <div class="detail-main-column">
+        <section class="panel">
+          <h2>Print options</h2>
+          <dl class="print-options-list">
+            <dt>Customer</dt><dd class="mono">${escapeHtml(order.customerWhatsappNumber ?? "Unknown")}</dd>
+            <dt>Copies</dt><dd>${escapeHtml(order.printOptions.copies ?? "-")}</dd>
+            <dt>Pages</dt><dd class="mono">${escapeHtml(order.printOptions.pageCount ?? "-")}</dd>
+            <dt>Color</dt><dd>${escapeHtml(label(order.printOptions.colorMode))}</dd>
+            <dt>Sides</dt><dd>${escapeHtml(label(order.printOptions.sideMode))}</dd>
+            <dt>Paper</dt><dd>${escapeHtml(order.printOptions.paperSize)}</dd>
+            <dt>Binding</dt><dd>${escapeHtml(label(order.printOptions.bindingType))}</dd>
+            <dt>Pickup</dt><dd>${escapeHtml(order.printOptions.pickupTime ?? "Anytime")}</dd>
+          </dl>
+        </section>
+
+        <section class="panel">
+          <h2>Files</h2>
+          <ul class="file-list">${files || `<li class="empty-state"><svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg><span>No PDF attached</span></li>`}</ul>
+        </section>
+      </div>
+
+      <div class="detail-sidebar-column">
+        <section class="panel payment-panel">
+          <h2>Payment & Status</h2>
+          <div class="amount">${escapeHtml(formatPaise(order.totalPaise))}</div>
+          <div class="status-wrapper">${statusPill}</div>
+
+          <div class="payment-meta">
+            <div class="meta-row">
+              <span class="meta-label">Payment Status</span>
+              <span class="payment-badge payment-${escapeAttribute(order.paymentStatus.toLowerCase())}">${escapeHtml(order.paymentStatus)}</span>
+            </div>
+            <div class="meta-row">
+              <span class="meta-label">Customer Contact</span>
+              <span class="contact-badge">${escapeHtml(order.customerWhatsappNumber ?? "Unknown")}</span>
+            </div>
+            ${
+              order.paymentLink
+                ? `
+            <div class="meta-row link-row">
+              <span class="meta-label">Razorpay Link</span>
+              <a class="payment-link-anchor" href="${escapeAttribute(order.paymentLink)}" target="_blank" rel="noopener noreferrer">
+                <span>View payment link</span>
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6M15 3h6v6M10 14 21 3"/></svg>
+              </a>
+            </div>`
+                : ""
+            }
+            ${
+              order.pickupCode
+                ? `
+            <div class="pickup-code-box">
+              <span class="pickup-label">Pickup Code</span>
+              <strong class="pickup-code">${escapeHtml(order.pickupCode)}</strong>
+            </div>`
+                : ""
+            }
+          </div>
+        </section>
+
+        <section class="panel controls-panel">
+          <h2>Status Controls</h2>
+          <div class="actions">
+            ${
+              validStatusActions.length > 0
+                ? validStatusActions
+                    .map((status) => {
+                      let btnClass = "";
+                      if (status === "CANCELLED") btnClass = "danger-btn";
+                      else if (
+                        status === "COMPLETED" ||
+                        status === "READY_FOR_PICKUP"
+                      )
+                        btnClass = "success-btn";
+                      return `<form method="post" action="/dashboard/orders/${escapeAttribute(order.id)}/status">
+                          <input type="hidden" name="status" value="${escapeAttribute(status)}" />
+                          <button type="submit" class="${btnClass}">${escapeHtml(status.replaceAll("_", " "))}</button>
+                        </form>`;
+                    })
+                    .join("")
+                : `<p class="muted">No status actions are available for this state.</p>`
+            }
+          </div>
+        </section>
+      </div>
     </main>`;
 }
 
@@ -429,62 +713,806 @@ function pageShell(title: string, body: string): string {
       <meta charset="utf-8" />
       <meta name="viewport" content="width=device-width, initial-scale=1" />
       <title>${escapeHtml(title)} · Tobi</title>
+      <meta name="color-scheme" content="light dark" />
+      <link rel="preconnect" href="https://fonts.googleapis.com">
+      <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+      <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
       <style>${dashboardCss}</style>
+      <script>
+        (function() {
+          const theme = localStorage.getItem("theme");
+          if (theme) {
+            document.documentElement.setAttribute("data-theme", theme);
+          }
+        })();
+      </script>
     </head>
-    <body>${body}</body>
+    <body>
+      ${body}
+      <script>
+        document.addEventListener("DOMContentLoaded", () => {
+          const toggle = document.getElementById("theme-toggle");
+          if (toggle) {
+            toggle.addEventListener("click", () => {
+              const current = document.documentElement.getAttribute("data-theme") || (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+              const next = current === "dark" ? "light" : "dark";
+              document.documentElement.setAttribute("data-theme", next);
+              localStorage.setItem("theme", next);
+            });
+          }
+        });
+      </script>
+    </body>
   </html>`;
 }
 
 const dashboardCss = `
-  :root { color-scheme: light; --bg: #f6f7f7; --panel: #ffffff; --text: #17211f; --muted: #66736f; --line: #d9dfdd; --primary: #0f766e; --amber: #b45309; --blue: #2563eb; --red: #b91c1c; }
-  * { box-sizing: border-box; }
-  body { margin: 0; min-height: 100vh; background: var(--bg); color: var(--text); font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; padding: 24px; }
-  h1, h2, p { margin: 0; }
-  h1 { font-size: 28px; line-height: 1.15; letter-spacing: 0; }
-  h2 { font-size: 16px; margin-bottom: 16px; }
-  a { color: var(--primary); font-weight: 700; }
-  .eyebrow { color: var(--muted); font-size: 12px; font-weight: 800; text-transform: uppercase; letter-spacing: .08em; margin-bottom: 6px; }
-  .toolbar { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin: 0 auto 20px; max-width: 1120px; }
-  .panel, .login-panel { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; box-shadow: 0 1px 2px rgba(15, 23, 42, .04); }
-  .panel { padding: 18px; max-width: 1120px; margin: 0 auto; }
-  .narrow, .login-panel { max-width: 420px; margin: 12vh auto 0; padding: 24px; }
-  .stack { display: grid; gap: 14px; margin-top: 20px; }
-  label { display: grid; gap: 6px; color: var(--muted); font-size: 13px; font-weight: 700; }
-  input { width: 100%; border: 1px solid var(--line); border-radius: 6px; padding: 11px 12px; font: inherit; }
-  button, .button { display: inline-flex; align-items: center; justify-content: center; min-height: 38px; border: 0; border-radius: 6px; background: var(--primary); color: white; padding: 8px 12px; font: inherit; font-weight: 800; text-decoration: none; cursor: pointer; white-space: nowrap; }
-  .secondary { background: #e6eeee; color: #0f3f3b; }
-  table { width: 100%; border-collapse: collapse; font-size: 14px; }
-  th, td { text-align: left; border-bottom: 1px solid var(--line); padding: 12px 10px; vertical-align: middle; }
-  th { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .06em; }
-  .empty { color: var(--muted); text-align: center; padding: 28px; }
-  .status { display: inline-flex; border-radius: 999px; padding: 4px 8px; font-size: 12px; font-weight: 900; background: #e6eeee; color: #123b37; text-transform: capitalize; }
-  .payment_link_sent, .payment_pending, .quote_ready { background: #fef3c7; color: var(--amber); }
-  .paid, .shop_notified, .ready_for_pickup, .completed { background: #dcfce7; color: #166534; }
-  .printing, .accepted { background: #dbeafe; color: var(--blue); }
-  .cancelled, .failed { background: #fee2e2; color: var(--red); }
-  .detail-grid { max-width: 1120px; margin: 0 auto; display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(280px, .85fr); gap: 16px; }
+  :root {
+    color-scheme: light dark;
+
+    /* Theme-specific definitions (default to light values) */
+    --accent-light: oklch(58% 0.23 268);
+    --accent-dark: oklch(72% 0.17 268);
+    --accent: light-dark(var(--accent-light), var(--accent-dark));
+
+    --accent-hover-light: oklch(50% 0.23 268);
+    --accent-hover-dark: oklch(78% 0.15 268);
+    --accent-hover: light-dark(var(--accent-hover-light), var(--accent-hover-dark));
+
+    --accent-subtle-light: oklch(96% 0.015 268);
+    --accent-subtle-dark: oklch(22% 0.04 268);
+    --accent-subtle: light-dark(var(--accent-subtle-light), var(--accent-subtle-dark));
+
+    --bg-light: oklch(98% 0.005 250);
+    --bg-dark: oklch(12% 0.015 250);
+    --bg: light-dark(var(--bg-light), var(--bg-dark));
+
+    --panel-light: oklch(100% 0 0);
+    --panel-dark: oklch(18% 0.02 250);
+    --panel: light-dark(var(--panel-light), var(--panel-dark));
+
+    --text-light: oklch(24% 0.015 250);
+    --text-dark: oklch(93% 0.01 250);
+    --text: light-dark(var(--text-light), var(--text-dark));
+
+    --text-muted-light: oklch(52% 0.015 250);
+    --text-muted-dark: oklch(72% 0.01 250);
+    --text-muted: light-dark(var(--text-muted-light), var(--text-muted-dark));
+
+    --line-light: oklch(92% 0.01 250);
+    --line-dark: oklch(24% 0.02 250);
+    --line: light-dark(var(--line-light), var(--line-dark));
+
+    --amber-bg: light-dark(oklch(96% 0.04 80), oklch(24% 0.05 80));
+    --amber-text: light-dark(oklch(48% 0.12 80), oklch(84% 0.10 80));
+
+    --green-bg: light-dark(oklch(95% 0.05 140), oklch(22% 0.06 140));
+    --green-text: light-dark(oklch(42% 0.12 140), oklch(82% 0.11 140));
+
+    --blue-bg: light-dark(oklch(95% 0.05 240), oklch(24% 0.06 240));
+    --blue-text: light-dark(oklch(45% 0.14 240), oklch(82% 0.11 240));
+
+    --red-bg: light-dark(oklch(95% 0.05 20), oklch(24% 0.06 20));
+    --red-text: light-dark(oklch(45% 0.14 20), oklch(82% 0.11 20));
+
+    --shadow-light: 0 1px 3px rgba(0, 0, 0, 0.04), 0 8px 24px rgba(0, 0, 0, 0.04);
+    --shadow-dark: 0 1px 3px rgba(0, 0, 0, 0.2), 0 8px 24px rgba(0, 0, 0, 0.18);
+    --shadow: light-dark(var(--shadow-light), var(--shadow-dark));
+
+    --scrollbar-track: light-dark(oklch(96% 0 0), oklch(16% 0 0));
+    --scrollbar-thumb: light-dark(oklch(82% 0 0), oklch(32% 0 0));
+
+    accent-color: var(--accent);
+    scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --accent: var(--accent-dark);
+      --accent-hover: var(--accent-hover-dark);
+      --accent-subtle: var(--accent-subtle-dark);
+      --bg: var(--bg-dark);
+      --panel: var(--panel-dark);
+      --text: var(--text-dark);
+      --text-muted: var(--text-muted-dark);
+      --line: var(--line-dark);
+      --shadow: var(--shadow-dark);
+    }
+  }
+
+  :root[data-theme="light"] {
+    color-scheme: light;
+    --accent: var(--accent-light);
+    --accent-hover: var(--accent-hover-light);
+    --accent-subtle: var(--accent-subtle-light);
+    --bg: var(--bg-light);
+    --panel: var(--panel-light);
+    --text: var(--text-light);
+    --text-muted: var(--text-muted-light);
+    --line: var(--line-light);
+    --shadow: var(--shadow-light);
+  }
+
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --accent: var(--accent-dark);
+    --accent-hover: var(--accent-hover-dark);
+    --accent-subtle: var(--accent-subtle-dark);
+    --bg: var(--bg-dark);
+    --panel: var(--panel-dark);
+    --text: var(--text-dark);
+    --text-muted: var(--text-muted-dark);
+    --line: var(--line-dark);
+    --shadow: var(--shadow-dark);
+  }
+
+  * { box-sizing: border-box; outline-color: var(--accent); }
+
+  body {
+    margin: 0;
+    min-height: 100vh;
+    background-color: var(--bg);
+    color: var(--text);
+    font-family: 'Plus Jakarta Sans', ui-sans-serif, system-ui, -apple-system, sans-serif;
+    padding: 32px 24px;
+    line-height: 1.5;
+    transition: background-color 0.3s ease, border-color 0.3s ease, color 0.3s ease;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  h1, h2, h3, p { margin: 0; }
+  h1 { font-size: 26px; font-weight: 800; letter-spacing: -0.02em; text-wrap: balance; }
+  h2 { font-size: 15px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted); margin-bottom: 20px; border-bottom: 1px solid var(--line); padding-bottom: 8px; }
+
+  a { color: var(--accent); text-decoration: none; font-weight: 600; transition: color 0.2s ease; }
+  a:hover { color: var(--accent-hover); }
+
+  .eyebrow { color: var(--text-muted); font-size: 11px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 4px; }
+
+  .toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 20px;
+    margin: 0 auto 32px;
+    max-width: 1120px;
+  }
+
+  .brand {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+  }
+  .brand h1 { font-size: 24px; font-weight: 800; }
+
+  .toolbar-actions {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  .brand .divider {
+    width: 1px;
+    height: 24px;
+    background-color: var(--line);
+  }
+
+  .logo {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-weight: 800;
+    font-size: 18px;
+    letter-spacing: -0.03em;
+    color: var(--text);
+  }
+  .logo svg {
+    color: var(--accent);
+  }
+
+  .panel {
+    background-color: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    box-shadow: var(--shadow);
+    padding: 24px;
+    max-width: 1120px;
+    margin: 0 auto;
+    transition: background-color 0.3s ease, border-color 0.3s ease, box-shadow 0.3s ease;
+  }
+
+  .table-panel {
+    padding: 0;
+    overflow: hidden;
+  }
+
+  .table-container {
+    overflow-x: auto;
+    scrollbar-width: thin;
+  }
+
+  /* Forms & Buttons */
+  .stack { display: grid; gap: 20px; margin-top: 24px; }
+
+  .input-group {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .input-group label {
+    font-size: 12px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-muted);
+  }
+
+  .input-wrapper {
+    position: relative;
+    display: flex;
+    align-items: center;
+  }
+
+  .input-wrapper input {
+    width: 100%;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 12px 14px 12px 40px;
+    font: inherit;
+    background-color: var(--bg);
+    color: var(--text);
+    transition: border-color 0.2s, box-shadow 0.2s;
+  }
+
+  .input-wrapper input:focus {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px var(--accent-subtle);
+    outline: none;
+  }
+
+  .input-icon {
+    position: absolute;
+    left: 14px;
+    color: var(--text-muted);
+    pointer-events: none;
+  }
+
+  button, .button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    min-height: 42px;
+    border: 0;
+    border-radius: 8px;
+    background-color: var(--accent);
+    color: #ffffff;
+    padding: 10px 18px;
+    font: inherit;
+    font-weight: 700;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: background-color 0.2s ease, transform 0.1s ease, box-shadow 0.2s;
+  }
+
+  button:hover, .button:hover {
+    background-color: var(--accent-hover);
+  }
+
+  button:active, .button:active {
+    transform: scale(0.98);
+  }
+
+  button:focus-visible, .button:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+
+  .button.secondary {
+    background-color: var(--accent-subtle);
+    color: var(--accent);
+  }
+  .button.secondary:hover {
+    background-color: light-dark(oklch(91% 0.03 268), oklch(28% 0.08 268));
+  }
+
+  /* Table styling */
+  table { width: 100%; border-collapse: collapse; font-size: 14px; text-align: left; }
+  th, td { padding: 16px 20px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+  th {
+    color: var(--text-muted);
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    background-color: light-dark(oklch(97% 0.005 250), oklch(15% 0.02 250));
+  }
+
+  tbody tr {
+    transition: background-color 0.15s ease;
+  }
+  tbody tr:hover {
+    background-color: light-dark(oklch(99% 0 0), oklch(21% 0.01 250));
+  }
+  tbody tr:last-child td { border-bottom: none; }
+
+  .order-link {
+    font-family: 'JetBrains Mono', monospace;
+    font-weight: 700;
+    font-size: 14px;
+  }
+
+  .files-badge, .time-badge, .contact-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    color: var(--text-muted);
+    font-weight: 600;
+  }
+  .contact-badge {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px;
+    color: var(--text);
+    background-color: var(--bg);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    padding: 4px 8px;
+    white-space: nowrap;
+  }
+  .files-badge svg, .time-badge svg {
+    color: var(--text-muted);
+    opacity: 0.8;
+  }
+
+  .amount-cell, .pickup-cell, .mono {
+    font-family: 'JetBrains Mono', monospace;
+    font-weight: 600;
+  }
+  .amount-cell {
+    font-size: 14px;
+  }
+
+  .empty { color: var(--text-muted); text-align: center; padding: 48px; font-weight: 500; }
+
+  /* Login page spec */
+  .login-bg-glow {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: radial-gradient(circle at 20% 30%, light-dark(oklch(94% 0.05 268 / 50%), oklch(15% 0.08 268 / 25%)), transparent 50%),
+                radial-gradient(circle at 80% 70%, light-dark(oklch(96% 0.03 140 / 40%), oklch(14% 0.06 140 / 20%)), transparent 55%);
+    z-index: -1;
+    pointer-events: none;
+  }
+
+  .login-wrapper {
+    max-width: 440px;
+    margin: 8vh auto 0;
+    position: relative;
+  }
+
+  .login-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 24px;
+    padding: 0 4px;
+  }
+
+  .login-panel {
+    background: light-dark(rgba(255, 255, 255, 0.7), rgba(24, 25, 28, 0.7));
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+    border: 1px solid light-dark(rgba(0, 0, 0, 0.08), rgba(255, 255, 255, 0.08));
+    border-radius: 16px;
+    padding: 32px;
+    box-shadow: var(--shadow);
+  }
+
+  .login-header-content {
+    margin-bottom: 24px;
+  }
+
+  .error-badge {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background-color: var(--red-bg);
+    color: var(--red-text);
+    padding: 10px 14px;
+    border-radius: 8px;
+    font-size: 13px;
+    font-weight: 600;
+    margin-bottom: 16px;
+    border: 1px solid light-dark(oklch(90% 0.05 20), oklch(35% 0.06 20));
+  }
+
+  /* Theme Toggle Button */
+  .theme-toggle {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 40px;
+    height: 40px;
+    padding: 0;
+    min-height: auto;
+    border-radius: 50%;
+    background-color: var(--panel);
+    color: var(--text-muted);
+    border: 1px solid var(--line);
+    box-shadow: var(--shadow);
+    transition: color 0.2s, background-color 0.2s, border-color 0.2s;
+  }
+  .theme-toggle:hover {
+    color: var(--text);
+    background-color: var(--bg);
+  }
+  .theme-toggle svg {
+    transition: transform 0.3s ease;
+  }
+  .theme-toggle:active svg {
+    transform: rotate(15deg) scale(0.9);
+  }
+
+  .theme-toggle .sun { display: none; }
+  .theme-toggle .moon { display: block; }
+
+  :root[data-theme="dark"] .theme-toggle .sun { display: block; }
+  :root[data-theme="dark"] .theme-toggle .moon { display: none; }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) .theme-toggle .sun { display: block; }
+    :root:not([data-theme="light"]) .theme-toggle .moon { display: none; }
+  }
+
+  /* Detail Layout styling */
+  .detail-grid {
+    max-width: 1120px;
+    margin: 0 auto;
+    display: grid;
+    grid-template-columns: minmax(0, 1.25fr) minmax(320px, 0.75fr);
+    gap: 24px;
+  }
+
+  .detail-main-column, .detail-sidebar-column {
+    display: flex;
+    flex-direction: column;
+    gap: 24px;
+  }
+
   .detail-grid .panel { width: 100%; margin: 0; }
-  dl { display: grid; grid-template-columns: 120px minmax(0, 1fr); gap: 10px; margin: 0; }
-  dt { color: var(--muted); font-weight: 700; }
-  dd { margin: 0; font-weight: 800; overflow-wrap: anywhere; }
-  .amount { font-size: 30px; font-weight: 900; margin-bottom: 12px; }
-  .pickup { margin-top: 14px; }
-  .file-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
-  .file-list li { display: grid; grid-template-columns: minmax(0, 1fr) auto auto auto; gap: 10px; align-items: center; border: 1px solid var(--line); border-radius: 6px; padding: 10px; }
-  .actions { display: flex; flex-wrap: wrap; gap: 10px; }
-  .actions form { margin: 0; }
-  .error { color: var(--red); margin-top: 14px; font-weight: 800; }
-  .muted { color: var(--muted); }
-  @media (max-width: 760px) {
-    body { padding: 14px; }
-    .toolbar { align-items: flex-start; }
-    .detail-grid { grid-template-columns: 1fr; }
+
+  /* Definition list styling */
+  .print-options-list {
+    display: grid;
+    grid-template-columns: 140px 1fr;
+    gap: 16px 20px;
+    margin: 0;
+  }
+  .print-options-list dt {
+    color: var(--text-muted);
+    font-weight: 700;
+    font-size: 13px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    display: flex;
+    align-items: center;
+  }
+  .print-options-list dd {
+    margin: 0;
+    font-weight: 700;
+    color: var(--text);
+    font-size: 15px;
+  }
+
+  .amount {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 36px;
+    font-weight: 800;
+    letter-spacing: -0.03em;
+    color: var(--text);
+    line-height: 1.1;
+  }
+
+  .status-wrapper {
+    margin: 12px 0 24px;
+  }
+
+  .payment-meta {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    border-top: 1px solid var(--line);
+    padding-top: 20px;
+  }
+
+  .meta-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 13px;
+  }
+  .meta-label {
+    color: var(--text-muted);
+    font-weight: 600;
+  }
+
+  .payment-link-anchor {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 13px;
+  }
+
+  .pickup-code-box {
+    background-color: var(--accent-subtle);
+    border: 1px dashed var(--accent);
+    border-radius: 8px;
+    padding: 14px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+    margin-top: 8px;
+  }
+  .pickup-label {
+    font-size: 11px;
+    font-weight: 700;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+  .pickup-code {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 20px;
+    font-weight: 800;
+    color: var(--accent);
+    letter-spacing: 0.05em;
+  }
+
+  /* File items */
+  .file-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 12px; }
+  .file-list li {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 16px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 14px 16px;
+    background-color: light-dark(oklch(99.5% 0 0), oklch(20% 0.01 250));
+    transition: border-color 0.2s, transform 0.2s, box-shadow 0.2s;
+  }
+  .file-list li:hover {
+    border-color: var(--accent);
+    transform: translateY(-2px);
+    box-shadow: var(--shadow);
+  }
+
+  .file-info-group {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    min-width: 0;
+  }
+  .file-icon {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 38px;
+    height: 38px;
+    border-radius: 8px;
+    background-color: var(--bg);
+    color: var(--accent);
+    flex-shrink: 0;
+  }
+  .file-meta {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+  }
+  .file-name {
+    font-size: 14px;
+    font-weight: 700;
+    color: var(--text);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .file-subtext {
+    font-size: 12px;
+    color: var(--text-muted);
+    font-weight: 500;
+  }
+
+  .empty-state {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    padding: 32px !important;
+    border: 1px dashed var(--line) !important;
+    background: transparent !important;
+    color: var(--text-muted);
+  }
+  .empty-state svg {
+    opacity: 0.5;
+  }
+
+  /* Status Controls Actions */
+  .actions { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 10px; }
+  .actions form { margin: 0; width: 100%; }
+  .actions button {
+    width: 100%;
+    min-height: 40px;
+    padding: 8px 12px;
+    font-size: 13px;
+    font-weight: 700;
+    text-transform: capitalize;
+    background-color: var(--bg);
+    color: var(--text);
+    border: 1px solid var(--line);
+  }
+  .actions button:hover {
+    background-color: var(--panel);
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+
+  .actions button.success-btn {
+    background-color: var(--green-bg);
+    color: var(--green-text);
+    border-color: transparent;
+  }
+  .actions button.success-btn:hover {
+    background-color: light-dark(oklch(91% 0.06 140), oklch(30% 0.08 140));
+    color: var(--green-text);
+  }
+
+  .actions button.danger-btn {
+    background-color: var(--red-bg);
+    color: var(--red-text);
+    border-color: transparent;
+  }
+  .actions button.danger-btn:hover {
+    background-color: light-dark(oklch(91% 0.06 20), oklch(30% 0.08 20));
+    color: var(--red-text);
+  }
+
+  /* Focus and scrollbars */
+  ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  ::-webkit-scrollbar-track {
+    background: var(--scrollbar-track);
+  }
+  ::-webkit-scrollbar-thumb {
+    background: var(--scrollbar-thumb);
+    border-radius: 4px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: light-dark(oklch(70% 0 0), oklch(40% 0 0));
+  }
+
+  /* Status Pills */
+  .status-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    border-radius: 9999px;
+    padding: 4px 10px;
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    border: 1px solid transparent;
+  }
+  .status-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+  }
+
+  .status-payment_link_sent, .status-payment_pending, .status-quote_ready, .status-awaiting_file, .status-awaiting_details {
+    background-color: var(--amber-bg);
+    color: var(--amber-text);
+    border-color: light-dark(oklch(90% 0.05 80), oklch(35% 0.06 80));
+  }
+  .status-payment_link_sent .status-dot, .status-payment_pending .status-dot, .status-quote_ready .status-dot, .status-awaiting_file .status-dot, .status-awaiting_details .status-dot {
+    background-color: var(--amber-text);
+  }
+
+  .status-paid, .status-shop_notified, .status-ready_for_pickup, .status-completed {
+    background-color: var(--green-bg);
+    color: var(--green-text);
+    border-color: light-dark(oklch(88% 0.06 140), oklch(33% 0.08 140));
+  }
+  .status-paid .status-dot, .status-shop_notified .status-dot, .status-ready_for_pickup .status-dot, .status-completed .status-dot {
+    background-color: var(--green-text);
+  }
+
+  .status-printing, .status-accepted {
+    background-color: var(--blue-bg);
+    color: var(--blue-text);
+    border-color: light-dark(oklch(88% 0.06 240), oklch(33% 0.08 240));
+  }
+  .status-printing .status-dot, .status-accepted .status-dot {
+    background-color: var(--blue-text);
+  }
+
+  .status-cancelled, .status-failed {
+    background-color: var(--red-bg);
+    color: var(--red-text);
+    border-color: light-dark(oklch(88% 0.06 20), oklch(33% 0.08 20));
+  }
+  .status-cancelled .status-dot, .status-failed .status-dot {
+    background-color: var(--red-text);
+  }
+
+  /* Payment status badges (compact, text-only pills) */
+  .payment-badge {
+    display: inline-flex;
+    align-items: center;
+    border-radius: 4px;
+    padding: 2px 6px;
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    background-color: var(--bg);
+    border: 1px solid var(--line);
+  }
+  .payment-captured, .payment-succeeded, .payment-paid {
+    background-color: var(--green-bg);
+    color: var(--green-text);
+    border-color: transparent;
+  }
+  .payment-pending {
+    background-color: var(--amber-bg);
+    color: var(--amber-text);
+    border-color: transparent;
+  }
+  .payment-failed {
+    background-color: var(--red-bg);
+    color: var(--red-text);
+    border-color: transparent;
+  }
+
+  @media (max-width: 840px) {
+    body { padding: 24px 16px; }
+    .toolbar { flex-direction: column; align-items: stretch; gap: 16px; margin-bottom: 24px; }
+    .brand { justify-content: space-between; }
+    .toolbar-actions { gap: 10px; justify-content: flex-end; }
+    .detail-grid { grid-template-columns: 1fr; gap: 20px; }
+    table { font-size: 13px; }
+    th, td { padding: 12px 14px; }
+    .print-options-list { grid-template-columns: 110px 1fr; gap: 12px 16px; }
+    .actions { grid-template-columns: repeat(2, 1fr); }
+  }
+
+  @media (max-width: 580px) {
+    .brand h1 { font-size: 20px; }
+    .logo { font-size: 16px; }
+    .brand .divider { height: 18px; }
     table, thead, tbody, tr, th, td { display: block; }
     thead { display: none; }
-    tr { border-bottom: 1px solid var(--line); padding: 10px 0; }
-    td { border: 0; padding: 7px 0; }
-    .file-list li { grid-template-columns: 1fr; }
-    .actions button { width: 100%; }
-    .actions form { flex: 1 1 160px; }
+    tr { border-bottom: 1px solid var(--line); padding: 14px 6px; position: relative; }
+    td { border: 0; padding: 6px 0; display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+    td::before {
+      content: attr(data-label);
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--text-muted);
+    }
+    td.actions-cell::before { content: none; }
+    td.actions-cell { justify-content: flex-end; margin-top: 8px; }
+    .file-list li { flex-direction: column; align-items: stretch; gap: 12px; }
+    .download-btn { width: 100%; }
+    .actions { grid-template-columns: 1fr; }
   }
 `;

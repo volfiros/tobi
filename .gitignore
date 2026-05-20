@@ -7,6 +7,18 @@ dist/
 .env.*
 !.env.example
 coverage/
+scratch/
+
+# Local one-off notes and generated guidance dumps
+docs/*.md
+
+# Non-core planning/design references
+design/
+references/
+
+# Generated design artifacts; keep design/README.md trackable if it is already tracked.
+design/generated/
+design/screenshots/
 
 # Agent planning and execution artifacts
 .agent-artifacts/
@@ -18,7 +30,3 @@ docs/superpowers/plans/
 *.agent.log
 *.subagent.log
 tobi-dashboard-*.png
-
-# Generated design artifacts; keep design/README.md trackable.
-design/generated/
-design/screenshots/

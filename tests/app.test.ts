@@ -99,6 +99,66 @@ describe("Tobi app", () => {
     expect(order.printOptions.pageCount).toBe(1);
   });
 
+  it("creates a separate order when the same customer sends another PDF after payment link is sent", async () => {
+    const store = new MemoryTobiStore();
+    const app = createApp(store);
+    const first = new URLSearchParams({
+      From: "whatsapp:+919999999990",
+      MessageSid: "SM_MULTI_ORDER_001",
+      Body: "2 copies B&W spiral double sided pickup at 5",
+      NumMedia: "1",
+      MediaUrl0: "https://example.test/first.pdf",
+      MediaContentType0: "application/pdf",
+      pageCount: "18"
+    });
+    const second = new URLSearchParams({
+      From: "whatsapp:+919999999990",
+      MessageSid: "SM_MULTI_ORDER_002",
+      Body: "1 copy color single sided staple pickup at 6",
+      NumMedia: "1",
+      MediaUrl0: "https://example.test/second.pdf",
+      MediaContentType0: "application/pdf",
+      pageCount: "8"
+    });
+
+    await app.request("/webhooks/whatsapp", { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body: first }, env);
+    await app.request("/webhooks/whatsapp", { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body: second }, env);
+
+    const orders = await store.listOrders();
+    expect(orders).toHaveLength(2);
+    expect(new Set(orders.map((order) => order.publicId)).size).toBe(2);
+    expect(orders.every((order) => order.customerWhatsappNumber === "whatsapp:+919999999990")).toBe(true);
+    expect(orders.every((order) => order.status === "PAYMENT_LINK_SENT")).toBe(true);
+  });
+
+  it("reuses an active order waiting for a file when the same customer sends the missing PDF", async () => {
+    const store = new MemoryTobiStore();
+    const app = createApp(store);
+    const detailsOnly = new URLSearchParams({
+      From: "whatsapp:+919999999989",
+      MessageSid: "SM_WAITING_FILE_001",
+      Body: "2 copies B&W spiral double sided pickup at 5",
+      NumMedia: "0"
+    });
+    const missingPdf = new URLSearchParams({
+      From: "whatsapp:+919999999989",
+      MessageSid: "SM_WAITING_FILE_002",
+      Body: "2 copies B&W spiral double sided pickup at 5",
+      NumMedia: "1",
+      MediaUrl0: "https://example.test/file.pdf",
+      MediaContentType0: "application/pdf",
+      pageCount: "18"
+    });
+
+    await app.request("/webhooks/whatsapp", { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body: detailsOnly }, env);
+    await app.request("/webhooks/whatsapp", { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body: missingPdf }, env);
+
+    const orders = await store.listOrders();
+    expect(orders).toHaveLength(1);
+    expect(orders[0].files).toHaveLength(1);
+    expect(orders[0].status).toBe("PAYMENT_LINK_SENT");
+  });
+
   it("does not reprocess duplicate inbound provider message IDs", async () => {
     const store = new MemoryTobiStore();
     const app = createApp(store);
@@ -265,6 +325,22 @@ describe("Tobi app", () => {
 
     const orders = await app.request("/dashboard/orders", { headers: { cookie } }, env);
     expect(await orders.text()).toContain("Orders");
+  });
+
+  it("shows customer WhatsApp contact on dashboard orders and details", async () => {
+    const store = new MemoryTobiStore();
+    const app = createApp(store);
+    const customer = await store.upsertCustomer({ whatsappNumber: "whatsapp:+919876543210" });
+    const order = await store.createOrder({ customerId: customer.id, shopId: "shop_demo" });
+    const cookie = "tobi_admin=test-session";
+
+    const orders = await app.request("/dashboard/orders", { headers: { cookie } }, env);
+    expect(await orders.text()).toContain("whatsapp:+919876543210");
+
+    const detail = await app.request(`/dashboard/orders/${order.id}`, { headers: { cookie } }, env);
+    const html = await detail.text();
+    expect(html).toContain("Customer Contact");
+    expect(html).toContain("whatsapp:+919876543210");
   });
 });
 
