@@ -80,6 +80,27 @@ export function createApp(
       whatsappNumber: inbound.from,
     });
     const activeOrder = await store.findActiveOrder(customer.id);
+    const confirmationReply = await handleQuoteConfirmation({
+      store,
+      env: context.env,
+      activeOrder,
+      inboundBody: inbound.body,
+    });
+    if (confirmationReply) {
+      await store.createMessage({
+        customerId: customer.id,
+        orderId: activeOrder?.id ?? null,
+        direction: "outbound",
+        provider: "demo",
+        processingStatus: "completed",
+        providerMessageId: null,
+        body: confirmationReply,
+        mediaCount: 0,
+        rawPayloadJson: JSON.stringify({ flow: "quote_confirmation" }),
+      });
+      await store.markMessageProcessed(inboundMessage.message.id, "completed");
+      return twimlMessage(confirmationReply);
+    }
     const inboundHasPdf = inbound.media.some((media) =>
       media.contentType.includes("pdf"),
     );
@@ -150,21 +171,28 @@ export function createApp(
             body: inbound.body,
             hasFile: order.files.length > 0,
           });
+    const contextualExtraction = await extractionWithOrderContext({
+      store,
+      ai,
+      orderId: order.id,
+      currentExtraction: extraction,
+      hasFile: order.files.length > 0,
+    });
     order = await store.updatePrintOptions(order.id, {
-      copies: extraction.copies ?? order.printOptions.copies,
-      colorMode: extraction.colorMode ?? order.printOptions.colorMode,
-      sideMode: extraction.sideMode ?? order.printOptions.sideMode,
-      paperSize: extraction.paperSize ?? order.printOptions.paperSize,
-      bindingType: extraction.bindingType ?? order.printOptions.bindingType,
-      pagesPerSheet: extraction.pagesPerSheet ?? order.printOptions.pagesPerSheet,
+      copies: contextualExtraction.copies ?? order.printOptions.copies,
+      colorMode: contextualExtraction.colorMode ?? order.printOptions.colorMode,
+      sideMode: contextualExtraction.sideMode ?? order.printOptions.sideMode,
+      paperSize: contextualExtraction.paperSize ?? order.printOptions.paperSize,
+      bindingType: contextualExtraction.bindingType ?? order.printOptions.bindingType,
+      pagesPerSheet: contextualExtraction.pagesPerSheet ?? order.printOptions.pagesPerSheet,
       fulfillmentType: "pickup",
-      pickupTime: extraction.pickupTime ?? order.printOptions.pickupTime,
+      pickupTime: contextualExtraction.pickupTime ?? order.printOptions.pickupTime,
       pageCount:
         authoritativePdfPageCount(order) ??
         order.printOptions.pageCount ??
-        extraction.pageCount,
+        contextualExtraction.pageCount,
       specialInstructions:
-        extraction.specialInstructions ??
+        contextualExtraction.specialInstructions ??
         order.printOptions.specialInstructions,
     });
 
@@ -187,18 +215,7 @@ export function createApp(
 
     const quote = calculateQuote({ options: order.printOptions });
     order = await store.setQuote(order.id, quote);
-    const payment = await new RazorpayPaymentService(
-      context.env,
-    ).createPaymentRequest(order);
-    order = await store.setPaymentRequest(order.id, payment);
-    const reply = [
-      `Quote for ${order.publicId}`,
-      `${quote.pages} pages x ${quote.copies} copies, ${label(order.printOptions.colorMode)}, ${label(order.printOptions.sideMode)}, ${order.printOptions.paperSize}, ${quote.pagesPerSheet}-up`,
-      `Billable sheets: ${quote.billableSheets}`,
-      `Binding: ${label(order.printOptions.bindingType)}`,
-      `Total: ${formatPaise(quote.totalPaise)}`,
-      `Pay here: ${payment.paymentLink}`,
-    ].join("\n");
+    const reply = confirmationSummary(order);
 
     await store.createMessage({
       customerId: customer.id,
@@ -334,6 +351,42 @@ export function createApp(
   return app;
 }
 
+async function extractionWithOrderContext(input: {
+  store: TobiStore;
+  ai: AIProvider;
+  orderId: string;
+  currentExtraction: PrintOrderExtraction;
+  hasFile: boolean;
+}): Promise<PrintOrderExtraction> {
+  const messages = await input.store.listInboundMessagesForOrder(input.orderId);
+  const combinedBody = messages
+    .map((message) => message.body?.trim())
+    .filter((body): body is string => Boolean(body))
+    .join("\n");
+  if (!combinedBody) return input.currentExtraction;
+
+  const contextual = await input.ai.extractPrintOrder({
+    body: combinedBody,
+    hasFile: input.hasFile,
+  });
+  return {
+    ...input.currentExtraction,
+    copies: contextual.copies ?? input.currentExtraction.copies,
+    colorMode: contextual.colorMode ?? input.currentExtraction.colorMode,
+    sideMode: contextual.sideMode ?? input.currentExtraction.sideMode,
+    paperSize: contextual.paperSize ?? input.currentExtraction.paperSize,
+    bindingType: contextual.bindingType ?? input.currentExtraction.bindingType,
+    pagesPerSheet:
+      contextual.pagesPerSheet ?? input.currentExtraction.pagesPerSheet,
+    fulfillmentType:
+      contextual.fulfillmentType ?? input.currentExtraction.fulfillmentType,
+    pickupTime: contextual.pickupTime ?? input.currentExtraction.pickupTime,
+    pageCount: contextual.pageCount ?? input.currentExtraction.pageCount,
+    specialInstructions:
+      contextual.specialInstructions ?? input.currentExtraction.specialInstructions,
+  };
+}
+
 function shouldReuseActiveOrder(
   order: Order | null,
   inboundHasPdf: boolean,
@@ -413,6 +466,72 @@ function activeOrderSummary(order: Order): string {
 
 function authoritativePdfPageCount(order: Order): number | null {
   return order.files.find((file) => file.pageCount !== null)?.pageCount ?? null;
+}
+
+async function handleQuoteConfirmation(input: {
+  store: TobiStore;
+  env: Env;
+  activeOrder: Order | null;
+  inboundBody: string;
+}): Promise<string | null> {
+  const { activeOrder, env, inboundBody, store } = input;
+  if (!activeOrder || activeOrder.status !== "QUOTE_READY") return null;
+
+  if (isCancelReply(inboundBody)) {
+    const cancelled = await store.transitionOrder(activeOrder.id, "CANCELLED");
+    await store.addOrderEvent(cancelled.id, "customer_cancelled_quote", {
+      channel: "whatsapp",
+    });
+    return `Cancelled order ${cancelled.publicId}.`;
+  }
+
+  if (!isConfirmReply(inboundBody)) {
+    return [
+      "Please confirm or cancel this quote before starting another order.",
+      confirmationSummary(activeOrder),
+    ].join("\n\n");
+  }
+
+  const payment = await new RazorpayPaymentService(env).createPaymentRequest(
+    activeOrder,
+  );
+  const order = await store.setPaymentRequest(activeOrder.id, payment);
+  return [
+    `Confirmed ${order.publicId}.`,
+    `Total: ${formatPaise(order.totalPaise)}`,
+    `Pay here: ${payment.paymentLink}`,
+  ].join("\n");
+}
+
+function confirmationSummary(order: Order): string {
+  const quote = order.quoteSnapshot;
+  if (!quote) {
+    throw new Error(`Order ${order.id} does not have a quote to confirm`);
+  }
+  return [
+    `Please confirm your print order ${order.publicId}`,
+    `Pages: ${quote.pages}`,
+    `Copies: ${quote.copies}`,
+    `Color: ${label(order.printOptions.colorMode)}`,
+    `Sides: ${label(order.printOptions.sideMode)}`,
+    `Layout: ${quote.pagesPerSheet}-up`,
+    `Paper: ${order.printOptions.paperSize}`,
+    `Binding: ${label(order.printOptions.bindingType)}`,
+    `Pickup: ${order.printOptions.pickupTime ?? "Anytime"}`,
+    `Billable sheets: ${quote.billableSheets}`,
+    `Total: ${formatPaise(quote.totalPaise)}`,
+    "",
+    "Reply Confirm to get the payment link.",
+    "Reply Cancel to cancel this order.",
+  ].join("\n");
+}
+
+function isConfirmReply(body: string): boolean {
+  return /^(confirm|confirmed|yes|ok|okay|proceed)$/i.test(body.trim());
+}
+
+function isCancelReply(body: string): boolean {
+  return /^(cancel|cancel order|no|stop)$/i.test(body.trim());
 }
 
 async function createShopNotification(

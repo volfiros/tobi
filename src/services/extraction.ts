@@ -126,9 +126,9 @@ export function extractWithRules(body: string, hasFile = false): PrintOrderExtra
     : /\b(bw|b\/w|black|black and white|b&w)\b/.test(normalized)
       ? "black_and_white"
       : null;
-  const sideMode = /\b(double|duplex|both sides?|two sided|2 sided)\b/.test(normalized)
+  const sideMode = /\b(double|duplex|both sides?|two[- ]sided|2[- ]sided|double[- ]sided)\b/.test(normalized)
     ? "double_sided"
-    : /\b(single|one side|1 side)\b/.test(normalized)
+    : /\b(single|one[- ]side|1[- ]side|single[- ]sided|one[- ]sided)\b/.test(normalized)
       ? "single_sided"
       : null;
   const bindingType = /\bspiral\b/.test(normalized)
@@ -210,15 +210,22 @@ function withExtractionOverrides(
   hasFile: boolean,
   extraction: PrintOrderExtraction,
 ): PrintOrderExtraction {
+  const deterministic = extractWithRules(body, hasFile);
   const conversation = withSpecificConversationOverride(body, extraction);
-  const pagesPerSheet = extractPagesPerSheet(body.toLowerCase(), hasFile);
-  const copies = extractCopies(body.toLowerCase());
-  if (!pagesPerSheet && !copies) return conversation;
   return {
     ...conversation,
-    copies: copies ?? conversation.copies,
-    pagesPerSheet: pagesPerSheet ?? conversation.pagesPerSheet,
-    pageCount: hasFile ? null : conversation.pageCount,
+    copies: deterministic.copies ?? conversation.copies,
+    colorMode: deterministic.colorMode ?? conversation.colorMode,
+    sideMode: deterministic.sideMode ?? conversation.sideMode,
+    paperSize: deterministic.paperSize ?? conversation.paperSize,
+    bindingType: deterministic.bindingType ?? conversation.bindingType,
+    pagesPerSheet: deterministic.pagesPerSheet ?? conversation.pagesPerSheet,
+    pickupTime: deterministic.pickupTime ?? conversation.pickupTime,
+    pageCount: hasFile ? null : (deterministic.pageCount ?? conversation.pageCount),
+    intent:
+      conversation.intent === "other" && deterministic.intent !== "other"
+        ? deterministic.intent
+        : conversation.intent,
   };
 }
 
@@ -236,7 +243,7 @@ function classifyIntent(normalized: string, hasFile: boolean): PrintOrderExtract
   if (/\b(how|explain|works?|process)\b.*\b(payment|pay|razorpay|upi)\b|\b(payment|pay|razorpay|upi)\b.*\b(how|explain|works?|process)\b/.test(normalized)) return "other";
   if (/\b(payment|paid|pay|upi|razorpay|link not working|failed)\b/.test(normalized)) return "payment_issue";
   if (/\b(human|support|help|agent|call me|contact)\b/.test(normalized)) return "human_support";
-  if (hasFile || /\b(print|pdf|document|file|copy|copies|pages?|binding|spiral|staple|duplex|double[- ]sided|single[- ]sided|one[- ]sided|black and white|b&w|bw|color|colour|pickup)\b/.test(normalized)) {
+  if (hasFile || /\b(print(?:ing)?|pdf|document|file|copy|copies|pages?|binding|spiral|staple|duplex|double[- ]sided|single[- ]sided|one[- ]sided|black and white|b&w|bw|color|colour|pickup)\b/.test(normalized)) {
     return hasFile ? "new_print_order" : "provide_order_details";
   }
   if (/\b(quote|price|cost|how much|rate)\b/.test(normalized)) return "ask_quote";

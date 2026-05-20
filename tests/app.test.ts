@@ -121,6 +121,43 @@ describe("Tobi app", () => {
     expect(await store.listOrders()).toHaveLength(0);
   });
 
+  it("starts an active order for bare printing intent and allows cancellation", async () => {
+    const store = new MemoryTobiStore();
+    const app = createApp(store);
+    const start = new URLSearchParams({
+      From: "whatsapp:+919999999988",
+      MessageSid: "SM_BARE_PRINTING_START",
+      Body: "I need printing",
+      NumMedia: "0"
+    });
+    const startResponse = await app.request(
+      "/webhooks/whatsapp",
+      { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body: start },
+      env
+    );
+
+    const startText = await startResponse.text();
+    expect(startText).toContain("Please send the PDF file");
+    const [startedOrder] = await store.listOrders();
+    expect(startedOrder.status).toBe("AWAITING_FILE");
+
+    const cancel = new URLSearchParams({
+      From: "whatsapp:+919999999988",
+      MessageSid: "SM_BARE_PRINTING_CANCEL",
+      Body: "cancel",
+      NumMedia: "0"
+    });
+    const cancelResponse = await app.request(
+      "/webhooks/whatsapp",
+      { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body: cancel },
+      env
+    );
+
+    const cancelText = await cancelResponse.text();
+    expect(cancelText).toContain(`Cancelled order ${startedOrder.publicId}`);
+    expect((await store.getOrder(startedOrder.id))?.status).toBe("CANCELLED");
+  });
+
   it("creates a quoted order from inbound WhatsApp fixture", async () => {
     const store = new MemoryTobiStore();
     const app = createApp(store);
@@ -145,13 +182,34 @@ describe("Tobi app", () => {
 
     expect(response.status).toBe(200);
     const text = await response.text();
-    expect(text).toContain("Quote for TOBI-");
-    expect(text).toContain("Pay here:");
+    expect(text).toContain("Please confirm your print order TOBI-");
+    expect(text).toContain("Pages: 18");
+    expect(text).toContain("Copies: 2");
+    expect(text).toContain("Reply Confirm to get the payment link.");
+    expect(text).toContain("Reply Cancel to cancel this order.");
+    expect(text).not.toContain("[ Confirm ]");
+    expect(text).not.toContain("Pay here:");
 
     const [order] = await store.listOrders();
-    expect(order.status).toBe("PAYMENT_LINK_SENT");
-    expect(order.paymentLink).toContain("/demo/pay/");
+    expect(order.status).toBe("QUOTE_READY");
     expect(order.totalPaise).toBe(8900);
+
+    const confirm = new URLSearchParams({
+      From: "whatsapp:+919999999999",
+      MessageSid: "SM_CONFIRM_QUOTE",
+      Body: "Confirm",
+      NumMedia: "0"
+    });
+    const confirmResponse = await app.request(
+      "/webhooks/whatsapp",
+      { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body: confirm },
+      env
+    );
+    const confirmText = await confirmResponse.text();
+    expect(confirmText).toContain(`Confirmed ${order.publicId}`);
+    expect(confirmText).toContain("Pay here:");
+    expect((await store.getOrder(order.id))?.status).toBe("PAYMENT_LINK_SENT");
+    expect((await store.getOrder(order.id))?.paymentLink).toContain("/demo/pay/");
   });
 
   it("counts PDF pages from stored media when webhook does not provide page count", async () => {
@@ -204,8 +262,9 @@ describe("Tobi app", () => {
 
     expect(response.status).toBe(200);
     const text = await response.text();
-    expect(text).toContain("284 pages x 3 copies");
-    expect(text).toContain("4-up");
+    expect(text).toContain("Pages: 284");
+    expect(text).toContain("Copies: 3");
+    expect(text).toContain("Layout: 4-up");
     expect(text).toContain("Billable sheets: 213");
     expect(text).toContain("₹428");
 
@@ -256,8 +315,100 @@ describe("Tobi app", () => {
       env
     );
     const quoteText = await quote.text();
-    expect(quoteText).toContain("284 pages x 2 copies");
-    expect(quoteText).toContain("4-up");
+    expect(quoteText).toContain("Pages: 284");
+    expect(quoteText).toContain("Copies: 2");
+    expect(quoteText).toContain("Layout: 4-up");
+  });
+
+  it("uses print specs from the PDF caption without asking duplicate questions", async () => {
+    const store = new MemoryTobiStore();
+    const app = createApp(store);
+    const body = new URLSearchParams({
+      From: "whatsapp:+919999999994",
+      MessageSid: "SM_PDF_CAPTION_SPECS",
+      Body: "Use this one with black and white printing, four pages per sheet. I want two copies. Print single-sided.",
+      NumMedia: "1",
+      MediaUrl0: "https://example.test/hrd-notes.pdf",
+      MediaContentType0: "application/pdf",
+      pageCount: "284"
+    });
+
+    const response = await app.request(
+      "/webhooks/whatsapp",
+      { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body },
+      env
+    );
+
+    const text = await response.text();
+    expect(text).toContain("Please confirm your print order TOBI-");
+    expect(text).toContain("Pages: 284");
+    expect(text).toContain("Copies: 2");
+    expect(text).toContain("Layout: 4-up");
+    expect(text).toContain("Billable sheets: 142");
+    expect(text).toContain("₹286");
+    expect(text).not.toContain("How many copies");
+    expect(text).not.toContain("single-sided or double-sided");
+
+    const [order] = await store.listOrders();
+    expect(order.printOptions).toMatchObject({
+      pageCount: 284,
+      copies: 2,
+      colorMode: "black_and_white",
+      sideMode: "single_sided",
+      pagesPerSheet: 4
+    });
+  });
+
+  it("recovers earlier PDF caption specs when missing details arrive later", async () => {
+    const store = new MemoryTobiStore();
+    const app = createApp(store);
+    const customer = await store.upsertCustomer({ whatsappNumber: "whatsapp:+919999999981" });
+    let order = await store.createOrder({ customerId: customer.id, shopId: "shop_demo" });
+    const caption = await store.createMessage({
+      customerId: customer.id,
+      orderId: order.id,
+      direction: "inbound",
+      provider: "twilio_sandbox",
+      processingStatus: "completed",
+      providerMessageId: "SM_LEGACY_CAPTION",
+      body: "Use this one with black and white printing, four pages per sheet. I want two copies.",
+      mediaCount: 1,
+      rawPayloadJson: "{}"
+    });
+    await store.attachMessageToOrder(caption.id, order.id);
+    await store.addOrderFile({
+      orderId: order.id,
+      originalFilename: "notes.pdf",
+      mimeType: "application/pdf",
+      r2Key: "orders/legacy/notes.pdf",
+      pageCount: 284,
+      fileSizeBytes: 1000
+    });
+    order = await store.updatePrintOptions(order.id, {
+      copies: 2,
+      colorMode: "black_and_white",
+      pageCount: 284
+    });
+    await store.transitionOrder(order.id, "AWAITING_DETAILS");
+
+    const sides = new URLSearchParams({
+      From: "whatsapp:+919999999981",
+      MessageSid: "SM_LEGACY_SIDE_REPLY",
+      Body: "single-sided",
+      NumMedia: "0"
+    });
+    const response = await app.request(
+      "/webhooks/whatsapp",
+      { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body: sides },
+      env
+    );
+
+    const text = await response.text();
+    expect(text).toContain("Pages: 284");
+    expect(text).toContain("Copies: 2");
+    expect(text).toContain("Layout: 4-up");
+    expect(text).toContain("Billable sheets: 142");
+    expect((await store.getOrder(order.id))?.printOptions.pagesPerSheet).toBe(4);
   });
 
   it("creates a separate order when the same customer sends another PDF after payment link is sent", async () => {
@@ -283,13 +434,20 @@ describe("Tobi app", () => {
     });
 
     await app.request("/webhooks/whatsapp", { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body: first }, env);
+    const confirmFirst = new URLSearchParams({
+      From: "whatsapp:+919999999990",
+      MessageSid: "SM_MULTI_ORDER_CONFIRM_001",
+      Body: "Confirm",
+      NumMedia: "0"
+    });
+    await app.request("/webhooks/whatsapp", { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body: confirmFirst }, env);
     await app.request("/webhooks/whatsapp", { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body: second }, env);
 
     const orders = await store.listOrders();
     expect(orders).toHaveLength(2);
     expect(new Set(orders.map((order) => order.publicId)).size).toBe(2);
     expect(orders.every((order) => order.customerWhatsappNumber === "whatsapp:+919999999990")).toBe(true);
-    expect(orders.every((order) => order.status === "PAYMENT_LINK_SENT")).toBe(true);
+    expect(orders.map((order) => order.status).sort()).toEqual(["PAYMENT_LINK_SENT", "QUOTE_READY"]);
   });
 
   it("reuses an active order waiting for a file when the same customer sends the missing PDF", async () => {
@@ -317,7 +475,7 @@ describe("Tobi app", () => {
     const orders = await store.listOrders();
     expect(orders).toHaveLength(1);
     expect(orders[0].files).toHaveLength(1);
-    expect(orders[0].status).toBe("PAYMENT_LINK_SENT");
+    expect(orders[0].status).toBe("QUOTE_READY");
   });
 
   it("does not reprocess duplicate inbound provider message IDs", async () => {

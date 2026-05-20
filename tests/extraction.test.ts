@@ -39,8 +39,25 @@ describe("mock extraction", () => {
     expect(extraction.sideMode).toBe("single_sided");
   });
 
+  it("extracts all print specs from a PDF caption", () => {
+    const extraction = extractWithRules(
+      "Use this one with black and white printing, four pages per sheet. I want two copies. Print single-sided.",
+      true
+    );
+
+    expect(extraction.copies).toBe(2);
+    expect(extraction.colorMode).toBe("black_and_white");
+    expect(extraction.sideMode).toBe("single_sided");
+    expect(extraction.pagesPerSheet).toBe(4);
+    expect(extraction.pageCount).toBeNull();
+  });
+
   it("extracts copy counts written as words", () => {
     expect(extractWithRules("I want two copies.").copies).toBe(2);
     expect(extractWithRules("Use this one with black and white printing, four pages per sheet. I want two copies.", true).copies).toBe(2);
+  });
+
+  it("classifies printing requests as order workflow intents", () => {
+    expect(extractWithRules("I need printing").intent).toBe("provide_order_details");
   });
 });

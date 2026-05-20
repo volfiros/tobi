@@ -20,6 +20,7 @@ export interface TobiStore {
   attachMessageToOrder(messageId: string, orderId: string): Promise<void>;
   markMessageProcessed(messageId: string, status: Message["processingStatus"]): Promise<void>;
   findMessageByProviderId(providerMessageId: string): Promise<Message | null>;
+  listInboundMessagesForOrder(orderId: string): Promise<Message[]>;
   findActiveOrder(customerId: string): Promise<Order | null>;
   createOrder(input: { customerId: string; shopId: string }): Promise<Order>;
   getOrder(orderId: string): Promise<Order | null>;
@@ -94,6 +95,12 @@ export class MemoryTobiStore implements TobiStore {
 
   async findMessageByProviderId(providerMessageId: string): Promise<Message | null> {
     return Array.from(this.messages.values()).find((message) => message.providerMessageId === providerMessageId) ?? null;
+  }
+
+  async listInboundMessagesForOrder(orderId: string): Promise<Message[]> {
+    return Array.from(this.messages.values())
+      .filter((message) => message.orderId === orderId && message.direction === "inbound")
+      .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
   }
 
   async findActiveOrder(customerId: string): Promise<Order | null> {
@@ -318,6 +325,14 @@ export class D1TobiStore extends MemoryTobiStore {
       .bind(providerMessageId)
       .first<MessageRow>();
     return row ? rowToMessage(row) : null;
+  }
+
+  override async listInboundMessagesForOrder(orderId: string): Promise<Message[]> {
+    const result = await this.db
+      .prepare("SELECT * FROM messages WHERE order_id = ?1 AND direction = 'inbound' ORDER BY created_at")
+      .bind(orderId)
+      .all<MessageRow>();
+    return result.results.map(rowToMessage);
   }
 
   override async attachMessageToOrder(messageId: string, orderId: string): Promise<void> {
