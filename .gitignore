@@ -8,17 +8,23 @@ dist/
 !.env.example
 coverage/
 scratch/
+AGENTS.md
 
 # Local one-off notes and generated guidance dumps
 docs/*.md
+docs/setup/stitch-handoff.md
 
 # Non-core planning/design references
 design/
 references/
+*.pen
 
-# Generated design artifacts; keep design/README.md trackable if it is already tracked.
+# Generated design and Stitch artifacts
 design/generated/
 design/screenshots/
+stitch/
+stitch-*/
+*.stitch.*
 
 # Agent planning and execution artifacts
 .agent-artifacts/
@@ -26,6 +32,7 @@ docs/superpowers/plans/
 .subagents/
 .codex-run/
 .stitch-scratch/
+.stitch/
 .playwright-mcp/
 *.agent.log
 *.subagent.log

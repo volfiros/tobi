@@ -46,8 +46,10 @@ export function calculateQuote(input: {
     throw new Error(`No pricing rule for ${options.paperSize}/${options.colorMode}/${options.sideMode}`);
   }
 
+  const pagesPerSheet = options.pagesPerSheet ?? 1;
+  const printedSides = Math.ceil(options.pageCount / pagesPerSheet);
   const billableSheets =
-    options.sideMode === "double_sided" ? Math.ceil(options.pageCount / 2) * options.copies : options.pageCount * options.copies;
+    (options.sideMode === "double_sided" ? Math.ceil(printedSides / 2) : printedSides) * options.copies;
   const printCost = billableSheets * rule.pricePerPagePaise;
   const binding = bindingPrices.find((candidate) => candidate.bindingType === options.bindingType);
   const bindingCost = (binding?.pricePaise ?? 0) * options.copies;
@@ -57,6 +59,7 @@ export function calculateQuote(input: {
   return {
     pages: options.pageCount,
     copies: options.copies,
+    pagesPerSheet,
     billableSheets,
     lineItems: [
       { label: "Printing", amountPaise: printCost },

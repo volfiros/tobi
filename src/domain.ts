@@ -25,6 +25,7 @@ export const printOptionsSchema = z.object({
   sideMode: z.enum(["single_sided", "double_sided"]).nullable().default(null),
   paperSize: z.enum(["A4", "A3", "letter", "legal"]).default("A4"),
   bindingType: z.enum(["none", "staple", "spiral", "soft_bind", "hard_bind"]).default("none"),
+  pagesPerSheet: z.union([z.literal(1), z.literal(2), z.literal(4), z.literal(6), z.literal(8)]).default(1),
   fulfillmentType: z.literal("pickup").default("pickup"),
   pickupTime: z.string().nullable().default(null),
   pageCount: z.number().int().positive().nullable().default(null),
@@ -48,6 +49,7 @@ export const extractionSchema = z.object({
   sideMode: printOptionsSchema.shape.sideMode,
   paperSize: z.enum(["A4", "A3", "letter", "legal"]).nullable(),
   bindingType: z.enum(["none", "staple", "spiral", "soft_bind", "hard_bind"]).nullable(),
+  pagesPerSheet: printOptionsSchema.shape.pagesPerSheet.nullable(),
   fulfillmentType: z.literal("pickup").nullable(),
   pickupTime: z.string().nullable(),
   pageCount: z.number().int().positive().nullable(),
@@ -83,6 +85,7 @@ export type OrderFile = {
 export type QuoteSnapshot = {
   pages: number;
   copies: number;
+  pagesPerSheet: number;
   billableSheets: number;
   lineItems: Array<{ label: string; amountPaise: number }>;
   totalPaise: number;

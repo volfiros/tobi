@@ -1,8 +1,8 @@
 import { Hono } from "hono";
 import { getCookie, setCookie } from "hono/cookie";
-import type { Order, OrderStatus, PrintOptions } from "./domain";
+import type { Order, OrderStatus, PrintOrderExtraction, PrintOptions } from "./domain";
 import { calculateQuote, formatPaise } from "./services/pricing";
-import { createAIProvider } from "./services/extraction";
+import { createAIProvider, type AIProvider } from "./services/extraction";
 import { RazorpayPaymentService } from "./services/razorpay";
 import {
   canTransition,
@@ -83,6 +83,34 @@ export function createApp(
     const inboundHasPdf = inbound.media.some((media) =>
       media.contentType.includes("pdf"),
     );
+    const ai = createAIProvider(context.env);
+    const initialExtraction = await ai.extractPrintOrder({
+      body: inbound.body,
+      hasFile: inboundHasPdf,
+    });
+    const conversationalReply = await replyForNonOrderIntent({
+      store,
+      ai,
+      activeOrder,
+      extraction: initialExtraction,
+      inboundBody: inbound.body,
+      inboundHasPdf,
+    });
+    if (conversationalReply) {
+      await store.createMessage({
+        customerId: customer.id,
+        orderId: activeOrder?.id ?? null,
+        direction: "outbound",
+        provider: "demo",
+        processingStatus: "completed",
+        providerMessageId: null,
+        body: conversationalReply,
+        mediaCount: 0,
+        rawPayloadJson: JSON.stringify({ intent: initialExtraction.intent }),
+      });
+      await store.markMessageProcessed(inboundMessage.message.id, "completed");
+      return twimlMessage(conversationalReply);
+    }
     let order = shouldReuseActiveOrder(activeOrder, inboundHasPdf)
       ? activeOrder
       : await store.createOrder({
@@ -115,20 +143,26 @@ export function createApp(
     }
 
     order = (await store.getOrder(order.id)) ?? order;
-    const ai = createAIProvider(context.env);
-    const extraction = await ai.extractPrintOrder({
-      body: inbound.body,
-      hasFile: order.files.length > 0,
-    });
+    const extraction =
+      inboundHasPdf === (order.files.length > 0)
+        ? initialExtraction
+        : await ai.extractPrintOrder({
+            body: inbound.body,
+            hasFile: order.files.length > 0,
+          });
     order = await store.updatePrintOptions(order.id, {
       copies: extraction.copies ?? order.printOptions.copies,
       colorMode: extraction.colorMode ?? order.printOptions.colorMode,
       sideMode: extraction.sideMode ?? order.printOptions.sideMode,
       paperSize: extraction.paperSize ?? order.printOptions.paperSize,
       bindingType: extraction.bindingType ?? order.printOptions.bindingType,
+      pagesPerSheet: extraction.pagesPerSheet ?? order.printOptions.pagesPerSheet,
       fulfillmentType: "pickup",
       pickupTime: extraction.pickupTime ?? order.printOptions.pickupTime,
-      pageCount: extraction.pageCount ?? order.printOptions.pageCount,
+      pageCount:
+        authoritativePdfPageCount(order) ??
+        order.printOptions.pageCount ??
+        extraction.pageCount,
       specialInstructions:
         extraction.specialInstructions ??
         order.printOptions.specialInstructions,
@@ -159,7 +193,8 @@ export function createApp(
     order = await store.setPaymentRequest(order.id, payment);
     const reply = [
       `Quote for ${order.publicId}`,
-      `${quote.pages} pages x ${quote.copies} copies, ${label(order.printOptions.colorMode)}, ${label(order.printOptions.sideMode)}, ${order.printOptions.paperSize}`,
+      `${quote.pages} pages x ${quote.copies} copies, ${label(order.printOptions.colorMode)}, ${label(order.printOptions.sideMode)}, ${order.printOptions.paperSize}, ${quote.pagesPerSheet}-up`,
+      `Billable sheets: ${quote.billableSheets}`,
       `Binding: ${label(order.printOptions.bindingType)}`,
       `Total: ${formatPaise(quote.totalPaise)}`,
       `Pay here: ${payment.paymentLink}`,
@@ -304,8 +339,80 @@ function shouldReuseActiveOrder(
   inboundHasPdf: boolean,
 ): order is Order {
   if (!order) return false;
+  if (["QUOTE_READY", "PAYMENT_LINK_SENT", "PAYMENT_PENDING", "PAID", "SHOP_NOTIFIED", "ACCEPTED", "PRINTING", "READY_FOR_PICKUP"].includes(order.status)) {
+    return false;
+  }
   if (!inboundHasPdf) return true;
   return order.status === "AWAITING_FILE" && order.files.length === 0;
+}
+
+async function replyForNonOrderIntent(input: {
+  store: TobiStore;
+  ai: AIProvider;
+  activeOrder: Order | null;
+  extraction: PrintOrderExtraction;
+  inboundBody: string;
+  inboundHasPdf: boolean;
+}): Promise<string | null> {
+  const { activeOrder, ai, extraction, inboundBody, inboundHasPdf, store } = input;
+  if (inboundHasPdf) return null;
+  if (["new_print_order", "provide_order_details"].includes(extraction.intent)) return null;
+  if (extraction.intent === "ask_quote" && activeOrder) return null;
+
+  if (extraction.intent === "ask_status") {
+    if (!activeOrder) return extraction.customerReplyDraft;
+    return [
+      `Your active order is ${activeOrder.publicId}.`,
+      `Order status: ${activeOrder.status.replaceAll("_", " ").toLowerCase()}.`,
+      `Payment status: ${activeOrder.paymentStatus.replaceAll("_", " ")}.`,
+    ].join("\n");
+  }
+
+  if (extraction.intent === "payment_issue") {
+    if (!activeOrder) return extraction.customerReplyDraft;
+    return [
+      `For ${activeOrder.publicId}, payment status is ${activeOrder.paymentStatus.replaceAll("_", " ")}.`,
+      activeOrder.paymentLink ? `Payment link: ${activeOrder.paymentLink}` : "I do not have a payment link for this order yet.",
+    ].join("\n");
+  }
+
+  if (extraction.intent === "cancel_order") {
+    if (!activeOrder) return "I do not see an active order to cancel.";
+    if (!canTransition(activeOrder.status, "CANCELLED")) {
+      return `I cannot cancel ${activeOrder.publicId} from its current status: ${activeOrder.status.replaceAll("_", " ").toLowerCase()}.`;
+    }
+    const cancelled = await store.transitionOrder(activeOrder.id, "CANCELLED");
+    await store.addOrderEvent(cancelled.id, "customer_cancelled_order", {
+      channel: "whatsapp",
+    });
+    return `Cancelled order ${cancelled.publicId}.`;
+  }
+
+  if (extraction.intent === "ask_quote") {
+    return "I can prepare a quote after I know the PDF and print options. Send the PDF first, then tell me copies, color or black and white, single or double-sided, binding, and pickup time.";
+  }
+
+  if (extraction.intent === "other") {
+    return ai.generateChatReply({
+      body: inboundBody,
+      activeOrderSummary: activeOrder ? activeOrderSummary(activeOrder) : null,
+    });
+  }
+
+  return extraction.customerReplyDraft;
+}
+
+function activeOrderSummary(order: Order): string {
+  return [
+    `order ${order.publicId}`,
+    `status ${order.status}`,
+    `payment ${order.paymentStatus}`,
+    order.paymentLink ? "payment link available" : "no payment link yet",
+  ].join(", ");
+}
+
+function authoritativePdfPageCount(order: Order): number | null {
+  return order.files.find((file) => file.pageCount !== null)?.pageCount ?? null;
 }
 
 async function createShopNotification(
@@ -316,7 +423,7 @@ async function createShopNotification(
     `New paid print order: ${order.publicId}`,
     `Amount paid: ${formatPaise(order.totalPaise)}`,
     `Files: ${order.files.length}`,
-    `Print: ${label(order.printOptions.colorMode)}, ${label(order.printOptions.sideMode)}, ${order.printOptions.paperSize}`,
+    `Print: ${label(order.printOptions.colorMode)}, ${label(order.printOptions.sideMode)}, ${order.printOptions.pagesPerSheet}-up, ${order.printOptions.paperSize}`,
     `Pickup: ${order.printOptions.pickupTime ?? "Anytime"}`,
   ].join("\n");
   await store.createMessage({
@@ -627,6 +734,7 @@ function orderDetailPage(order: Order): string {
             <dt>Pages</dt><dd class="mono">${escapeHtml(order.printOptions.pageCount ?? "-")}</dd>
             <dt>Color</dt><dd>${escapeHtml(label(order.printOptions.colorMode))}</dd>
             <dt>Sides</dt><dd>${escapeHtml(label(order.printOptions.sideMode))}</dd>
+            <dt>Layout</dt><dd>${escapeHtml(order.printOptions.pagesPerSheet)}-up</dd>
             <dt>Paper</dt><dd>${escapeHtml(order.printOptions.paperSize)}</dd>
             <dt>Binding</dt><dd>${escapeHtml(label(order.printOptions.bindingType))}</dd>
             <dt>Pickup</dt><dd>${escapeHtml(order.printOptions.pickupTime ?? "Anytime")}</dd>
