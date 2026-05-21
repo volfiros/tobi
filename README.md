@@ -2,8 +2,6 @@
   <img src="./assets/tobi-logo.svg" alt="Tobi animated printer logo" width="780">
 </p>
 
-# Tobi
-
 Tobi is a WhatsApp-first print-ordering demo for Indian print shops. Customers send a PDF and print instructions in WhatsApp, Tobi extracts the print options, asks for missing details, prepares a deterministic quote, sends a Razorpay Test Mode payment link, and updates a shop dashboard when payment is confirmed.
 
 The app is built as a Hono app on Cloudflare Workers with Cloudflare D1, R2, KV, Twilio WhatsApp Sandbox, Gemini extraction, and Razorpay Test Mode webhooks.
