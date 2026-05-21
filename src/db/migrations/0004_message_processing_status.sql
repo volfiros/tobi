@@ -1,1 +1,3 @@
-ALTER TABLE messages ADD COLUMN processing_status TEXT DEFAULT 'completed' NOT NULL;
+-- The current initial schema already includes messages.processing_status.
+-- Keep this migration as a no-op so existing migration histories remain valid.
+SELECT 1;

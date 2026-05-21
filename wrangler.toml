@@ -3,16 +3,17 @@ main = "src/index.ts"
 compatibility_date = "2026-05-19"
 
 [vars]
-APP_ENV = "development"
-PUBLIC_APP_URL = "http://localhost:8787"
+APP_ENV = "production"
+PUBLIC_APP_URL = "https://tobi.rithvik-padma.workers.dev"
 DEFAULT_CURRENCY = "INR"
 DEMO_SHOP_ID = "shop_demo"
 DEMO_SHOP_NAME = "Tobi Demo Print Shop"
+GEMINI_DEFAULT_MODEL = "gemini-2.5-flash-lite"
 
 [[d1_databases]]
 binding = "DB"
 database_name = "tobi-demo-db"
-database_id = "local-demo"
+database_id = "6503419a-c47a-4ab3-9ce1-7394f00495e8"
 migrations_dir = "src/db/migrations"
 
 [[r2_buckets]]
@@ -21,13 +22,8 @@ bucket_name = "tobi-demo-files"
 
 [[kv_namespaces]]
 binding = "SESSIONS"
-id = "local-demo"
+id = "df3066f19f0346428b607203046b09e2"
 
 [[queues.producers]]
 binding = "JOB_QUEUE"
 queue = "tobi-demo-jobs"
-
-[[queues.consumers]]
-queue = "tobi-demo-jobs"
-max_batch_size = 10
-max_batch_timeout = 5
