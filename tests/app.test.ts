@@ -22,15 +22,30 @@ const env = {
 const originalFetch = globalThis.fetch;
 
 beforeEach(() => {
-  globalThis.fetch = (async () =>
-    new Response("%PDF-1.7\n1 0 obj\n<< /Type /Page >>\nendobj\n%%EOF", {
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    const url = String(input);
+    const pages = url.includes("hrd-notes")
+      ? url.includes("HRD_notes_4") || url.includes("hrd-notes-71")
+        ? 71
+        : 284
+      : url.includes("second.pdf")
+        ? 8
+        : url.includes("file.pdf") || url.includes("first.pdf")
+          ? 18
+          : 1;
+    return new Response(pdfWithPages(pages), {
       headers: { "content-type": "application/pdf" }
-    })) as typeof fetch;
+    });
+  }) as typeof fetch;
 });
 
 afterEach(() => {
   globalThis.fetch = originalFetch;
 });
+
+function pdfWithPages(pages: number): string {
+  return `%PDF-1.7\n${Array.from({ length: pages }, (_, index) => `${index + 1} 0 obj\n<< /Type /Page >>\nendobj`).join("\n")}\n%%EOF`;
+}
 
 describe("Tobi app", () => {
   it("responds to health checks", async () => {
@@ -219,7 +234,7 @@ describe("Tobi app", () => {
       From: "whatsapp:+919999999998",
       Body: "2 copies B&W spiral double sided pickup at 5",
       NumMedia: "1",
-      MediaUrl0: "https://example.test/file.pdf",
+      MediaUrl0: "https://example.test/sample.pdf",
       MediaContentType0: "application/pdf"
     });
 
@@ -236,6 +251,34 @@ describe("Tobi app", () => {
     expect(response.status).toBe(200);
     const [order] = await store.listOrders();
     expect(order.printOptions.pageCount).toBe(1);
+  });
+
+  it("prefers fetched PDF page count over inbound media metadata", async () => {
+    const store = new MemoryTobiStore();
+    const app = createApp(store);
+    const body = new URLSearchParams({
+      From: "whatsapp:+919999999987",
+      Body: "2 copies B&W spiral double sided pickup at 5",
+      NumMedia: "1",
+      MediaUrl0: "https://example.test/metadata-mismatch.pdf",
+      MediaContentType0: "application/pdf",
+      pageCount: "18"
+    });
+
+    const response = await app.request(
+      "/webhooks/whatsapp",
+      {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        body
+      },
+      env
+    );
+
+    expect(response.status).toBe(200);
+    const [order] = await store.listOrders();
+    expect(order.printOptions.pageCount).toBe(1);
+    expect(order.files[0].pageCount).toBe(1);
   });
 
   it("keeps PDF page count authoritative when customer asks for four-up layout later", async () => {
@@ -283,7 +326,7 @@ describe("Tobi app", () => {
       MessageSid: "MM_FILENAME_ONLY_PDF",
       Body: "HRD_notes_4.pdf",
       NumMedia: "1",
-      MediaUrl0: "https://example.test/hrd-notes.pdf",
+      MediaUrl0: "https://example.test/hrd-notes-71.pdf",
       MediaContentType0: "application/pdf",
       pageCount: "71"
     });
@@ -463,6 +506,167 @@ describe("Tobi app", () => {
     });
   });
 
+  it("updates copies from a short adaptive follow-up after a PDF upload", async () => {
+    const store = new MemoryTobiStore();
+    const app = createApp(store);
+    const pdfOnly = new URLSearchParams({
+      From: "whatsapp:+919999999980",
+      MessageSid: "SM_ADAPTIVE_PDF_FIRST",
+      Body: "notes.pdf",
+      NumMedia: "1",
+      MediaUrl0: "https://example.test/notes.pdf",
+      MediaContentType0: "application/pdf",
+      pageCount: "12"
+    });
+    const copies = new URLSearchParams({
+      From: "whatsapp:+919999999980",
+      MessageSid: "SM_ADAPTIVE_TWO_COPIES",
+      Body: "two copies",
+      NumMedia: "0"
+    });
+
+    await app.request("/webhooks/whatsapp", { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body: pdfOnly }, env);
+    const response = await app.request("/webhooks/whatsapp", { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body: copies }, env);
+
+    const text = await response.text();
+    const [order] = await store.listOrders();
+    expect(order.printOptions.copies).toBe(2);
+    expect(text).toContain("black and white or color");
+  });
+
+  it("updates side mode from an indirect same-file follow-up without creating another order", async () => {
+    const store = new MemoryTobiStore();
+    const app = createApp(store);
+    const pdfOnly = new URLSearchParams({
+      From: "whatsapp:+919999999979",
+      MessageSid: "SM_ADAPTIVE_SAME_FILE_PDF",
+      Body: "notes.pdf",
+      NumMedia: "1",
+      MediaUrl0: "https://example.test/notes.pdf",
+      MediaContentType0: "application/pdf",
+      pageCount: "12"
+    });
+    const side = new URLSearchParams({
+      From: "whatsapp:+919999999979",
+      MessageSid: "SM_ADAPTIVE_SAME_FILE_SIDE",
+      Body: "same file single side",
+      NumMedia: "0"
+    });
+
+    await app.request("/webhooks/whatsapp", { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body: pdfOnly }, env);
+    await app.request("/webhooks/whatsapp", { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body: side }, env);
+
+    const orders = await store.listOrders();
+    expect(orders).toHaveLength(1);
+    expect(orders[0].printOptions.sideMode).toBe("single_sided");
+  });
+
+  it("recomputes a quote-ready order when the customer edits before payment", async () => {
+    const store = new MemoryTobiStore();
+    const app = createApp(store);
+    const first = new URLSearchParams({
+      From: "whatsapp:+919999999978",
+      MessageSid: "SM_ADAPTIVE_REQUOTE_FIRST",
+      Body: "1 copy B&W single sided pickup at 5",
+      NumMedia: "1",
+      MediaUrl0: "https://example.test/notes.pdf",
+      MediaContentType0: "application/pdf",
+      pageCount: "10"
+    });
+    const edit = new URLSearchParams({
+      From: "whatsapp:+919999999978",
+      MessageSid: "SM_ADAPTIVE_REQUOTE_COLOR",
+      Body: "make it color instead",
+      NumMedia: "0"
+    });
+
+    await app.request("/webhooks/whatsapp", { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body: first }, env);
+    const before = (await store.listOrders())[0];
+    const response = await app.request("/webhooks/whatsapp", { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body: edit }, env);
+    const after = (await store.getOrder(before.id))!;
+
+    expect(await response.text()).toContain("Please confirm your print order");
+    expect(after.status).toBe("QUOTE_READY");
+    expect(after.printOptions.colorMode).toBe("color");
+    expect(after.totalPaise).toBeGreaterThan(before.totalPaise);
+  });
+
+  it("does not mutate print options after a payment link is sent", async () => {
+    const store = new MemoryTobiStore();
+    const app = createApp(store);
+    const first = new URLSearchParams({
+      From: "whatsapp:+919999999977",
+      MessageSid: "SM_ADAPTIVE_PAYMENT_FIRST",
+      Body: "1 copy B&W single sided pickup at 5",
+      NumMedia: "1",
+      MediaUrl0: "https://example.test/notes.pdf",
+      MediaContentType0: "application/pdf",
+      pageCount: "10"
+    });
+    const confirm = new URLSearchParams({
+      From: "whatsapp:+919999999977",
+      MessageSid: "SM_ADAPTIVE_PAYMENT_CONFIRM",
+      Body: "Confirm",
+      NumMedia: "0"
+    });
+    const edit = new URLSearchParams({
+      From: "whatsapp:+919999999977",
+      MessageSid: "SM_ADAPTIVE_PAYMENT_EDIT",
+      Body: "make it color instead",
+      NumMedia: "0"
+    });
+
+    await app.request("/webhooks/whatsapp", { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body: first }, env);
+    const [order] = await store.listOrders();
+    await app.request("/webhooks/whatsapp", { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body: confirm }, env);
+    const response = await app.request("/webhooks/whatsapp", { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body: edit }, env);
+
+    expect(await response.text()).toContain("cannot automatically change");
+    expect((await store.getOrder(order.id))?.printOptions.colorMode).toBe("black_and_white");
+  });
+
+  it("answers unexpected print-domain questions without the generic fallback", async () => {
+    const store = new MemoryTobiStore();
+    const app = createApp(store);
+    const body = new URLSearchParams({
+      From: "whatsapp:+919999999976",
+      MessageSid: "SM_ADAPTIVE_PRINT_DOMAIN_QUESTION",
+      Body: "can you print my project report?",
+      NumMedia: "0"
+    });
+
+    const response = await app.request(
+      "/webhooks/whatsapp",
+      { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body },
+      env
+    );
+
+    const text = await response.text();
+    expect(text).toContain("Please send the PDF file");
+    expect(text).not.toContain("I understand. For this demo");
+  });
+
+  it("redirects unrelated questions to print-order help", async () => {
+    const store = new MemoryTobiStore();
+    const app = createApp(store);
+    const body = new URLSearchParams({
+      From: "whatsapp:+919999999975",
+      MessageSid: "SM_ADAPTIVE_UNRELATED",
+      Body: "what is the weather today?",
+      NumMedia: "0"
+    });
+
+    const response = await app.request(
+      "/webhooks/whatsapp",
+      { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body },
+      env
+    );
+
+    const text = await response.text();
+    expect(text).toContain("print");
+    expect(await store.listOrders()).toHaveLength(0);
+  });
+
   it("recovers earlier PDF caption specs when missing details arrive later", async () => {
     const store = new MemoryTobiStore();
     const app = createApp(store);
@@ -515,7 +719,7 @@ describe("Tobi app", () => {
     expect((await store.getOrder(order.id))?.printOptions.pagesPerSheet).toBe(4);
   });
 
-  it("creates a separate order when the same customer sends another PDF after payment link is sent", async () => {
+  it("does not create a separate order when the same customer sends another PDF after payment link is sent", async () => {
     const store = new MemoryTobiStore();
     const app = createApp(store);
     const first = new URLSearchParams({
@@ -545,13 +749,13 @@ describe("Tobi app", () => {
       NumMedia: "0"
     });
     await app.request("/webhooks/whatsapp", { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body: confirmFirst }, env);
-    await app.request("/webhooks/whatsapp", { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body: second }, env);
+    const secondResponse = await app.request("/webhooks/whatsapp", { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body: second }, env);
 
     const orders = await store.listOrders();
-    expect(orders).toHaveLength(2);
-    expect(new Set(orders.map((order) => order.publicId)).size).toBe(2);
-    expect(orders.every((order) => order.customerWhatsappNumber === "whatsapp:+919999999990")).toBe(true);
-    expect(orders.map((order) => order.status).sort()).toEqual(["PAYMENT_LINK_SENT", "QUOTE_READY"]);
+    expect(await secondResponse.text()).toContain("cannot automatically change");
+    expect(orders).toHaveLength(1);
+    expect(orders[0].customerWhatsappNumber).toBe("whatsapp:+919999999990");
+    expect(orders[0].status).toBe("PAYMENT_LINK_SENT");
   });
 
   it("reuses an active order waiting for a file when the same customer sends the missing PDF", async () => {

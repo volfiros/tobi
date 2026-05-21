@@ -2,23 +2,25 @@
   <img src="./assets/tobi-logo-luminal.svg" alt="Tobi animated printer logo" width="780">
 </p>
 
-Tobi is a WhatsApp-first print-ordering demo for Indian print shops. Customers send a PDF and print instructions in WhatsApp, Tobi extracts the print options, asks for missing details, prepares a deterministic quote, sends a Razorpay Test Mode payment link, and updates a shop dashboard when payment is confirmed.
+Tobi is a WhatsApp-first print-ordering demo for Indian print shops. Customers send a PDF and print instructions in WhatsApp, Tobi uses a hybrid AI understanding layer to interpret the message, asks for missing details, prepares a deterministic quote, sends a Razorpay Test Mode payment link, and updates a shop dashboard when payment is confirmed.
 
-The app is built as a Hono app on Cloudflare Workers with Cloudflare D1, R2, KV, Twilio WhatsApp Sandbox, Gemini extraction, and Razorpay Test Mode webhooks.
+The app is built as a Hono app on Cloudflare Workers with Cloudflare D1, R2, KV, Twilio WhatsApp Sandbox, Gemini message understanding, and Razorpay Test Mode webhooks.
 
 ## Product Flow
 
 1. A customer messages the Twilio WhatsApp Sandbox.
 2. Tobi receives the inbound webhook at `/webhooks/whatsapp`.
 3. PDF files are stored in R2 and the PDF page count is treated as authoritative.
-4. Gemini plus deterministic fallback rules extract print options such as copies, color mode, side mode, binding, pickup time, and N-up layout.
-5. Tobi asks for missing information one field at a time.
-6. Tobi shows a confirmation summary with pages, copies, layout, sides, pickup time, billable sheets, and total price.
-7. The customer replies `Confirm` or `Cancel`.
-8. On confirmation, Tobi creates a Razorpay Test Mode payment link.
-9. Razorpay posts payment events to `/webhooks/razorpay`.
-10. Paid orders appear in the dashboard for shop processing.
-11. The shop updates order status from the dashboard.
+4. Gemini returns structured message understanding: intent, confidence, normalized print slots, ambiguity, and optional general-chat reply.
+5. Backend code validates the understanding and performs all order, file, quote, payment, and state changes.
+6. Tobi asks for missing information one field at a time.
+7. Tobi shows a confirmation summary with pages, copies, layout, sides, pickup time, billable sheets, and total price.
+8. Before payment starts, customers can change details such as "make it color instead" and Tobi recomputes the quote.
+9. The customer replies `Confirm` or `Cancel`.
+10. On confirmation, Tobi creates a Razorpay Test Mode payment link.
+11. Razorpay posts payment events to `/webhooks/razorpay`.
+12. Paid orders appear in the dashboard for shop processing.
+13. The shop updates order status from the dashboard.
 
 ## Deployed App
 
@@ -61,14 +63,23 @@ Login is protected by `ADMIN_PIN` and an HTTP-only dashboard session cookie.
 WhatsApp Sandbox
   -> Twilio webhook
   -> Hono Worker
+  -> Gemini message understanding
+  -> deterministic backend workflow
   -> D1 orders/messages/payments
   -> R2 PDF storage
-  -> Gemini extraction
   -> Razorpay payment link
   -> Razorpay webhook
   -> D1 payment/order update
   -> Dashboard
 ```
+
+The AI boundary is intentionally narrow: Gemini interprets print-domain WhatsApp messages, while backend code validates and executes the workflow. Pricing, payment links, PDF storage, PDF page counts, missing-field prompts, and order state transitions are deterministic.
+
+Examples:
+
+- `two copies` updates the active order copy count when a PDF/order is already in progress.
+- `make it color instead` updates a pre-payment quote and returns a refreshed confirmation summary.
+- `how much now?` returns a quote when enough details are present, or asks for the next missing detail.
 
 Core storage:
 
@@ -250,6 +261,8 @@ The tests cover:
 
 - WhatsApp message handling.
 - General conversation replies.
+- Hybrid AI message understanding.
+- Adaptive print-domain follow-up messages.
 - Order state transitions.
 - PDF page-count handling.
 - N-up layout extraction.
