@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="./assets/tobi-logo.svg" alt="Tobi animated printer logo" width="780">
+  <img src="./assets/tobi-logo-luminal.svg" alt="Tobi animated printer logo" width="780">
 </p>
 
 Tobi is a WhatsApp-first print-ordering demo for Indian print shops. Customers send a PDF and print instructions in WhatsApp, Tobi extracts the print options, asks for missing details, prepares a deterministic quote, sends a Razorpay Test Mode payment link, and updates a shop dashboard when payment is confirmed.
