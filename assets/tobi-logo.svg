@@ -3,13 +3,14 @@
   <desc id="desc">Animated Tobi wordmark with a printer icon, moving paper, and scanning accent line.</desc>
   <style>
     :root {
-      --ink: #10251f;
-      --muted: #60786e;
-      --accent: #00a86b;
-      --accent-2: #12c2a3;
+      --ink: #272733;
+      --muted: #6e6f7c;
+      --accent: #5947e8;
+      --accent-2: #8c7cff;
       --paper: #ffffff;
-      --panel: #effaf5;
-      --line: #bfe7d5;
+      --panel: #fafaff;
+      --line: #e5e3f6;
+      --glow: #ece9ff;
     }
 
     .paper {
@@ -78,10 +79,12 @@
 
     @media (prefers-color-scheme: dark) {
       :root {
-        --ink: #f1fff8;
-        --muted: #a8c7ba;
-        --panel: #0d2019;
-        --line: #255545;
+        --ink: #f3f2ff;
+        --muted: #b8b5ce;
+        --paper: #171724;
+        --panel: #151521;
+        --line: #2a2944;
+        --glow: #241f55;
       }
     }
 
@@ -96,7 +99,19 @@
     }
   </style>
 
+  <defs>
+    <radialGradient id="luminalGlow" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(628 58) rotate(136) scale(266 150)">
+      <stop stop-color="var(--glow)"/>
+      <stop offset="1" stop-color="var(--panel)" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="printerAccent" x1="0" y1="78" x2="184" y2="144" gradientUnits="userSpaceOnUse">
+      <stop stop-color="var(--accent)"/>
+      <stop offset="1" stop-color="var(--accent-2)"/>
+    </linearGradient>
+  </defs>
+
   <rect x="7" y="7" width="766" height="206" rx="34" fill="var(--panel)" stroke="var(--line)" stroke-width="2"/>
+  <rect x="7" y="7" width="766" height="206" rx="34" fill="url(#luminalGlow)"/>
   <circle class="spark spark-1" cx="665" cy="55" r="8" fill="var(--accent-2)" opacity=".7"/>
   <circle class="spark spark-2" cx="704" cy="151" r="5" fill="var(--accent)" opacity=".7"/>
 
@@ -105,7 +120,7 @@
     <path class="paper" d="M62 25H122M62 43H110" stroke="var(--muted)" stroke-width="6" stroke-linecap="round"/>
 
     <rect x="17" y="55" width="150" height="88" rx="22" fill="var(--ink)"/>
-    <rect x="0" y="78" width="184" height="66" rx="22" fill="var(--accent)"/>
+    <rect x="0" y="78" width="184" height="66" rx="22" fill="url(#printerAccent)"/>
     <rect x="44" y="112" width="96" height="70" rx="12" fill="var(--paper)" stroke="var(--ink)" stroke-width="4"/>
     <path d="M62 139H122M62 158H106" stroke="var(--muted)" stroke-width="6" stroke-linecap="round"/>
     <rect class="scanner" x="50" y="128" width="84" height="7" rx="3.5" fill="var(--accent-2)"/>
