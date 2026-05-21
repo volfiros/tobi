@@ -275,6 +275,110 @@ describe("Tobi app", () => {
     expect(order.quoteSnapshot?.billableSheets).toBe(213);
   });
 
+  it("quickly asks for missing details after a filename-only PDF upload", async () => {
+    const store = new MemoryTobiStore();
+    const app = createApp(store);
+    const body = new URLSearchParams({
+      From: "whatsapp:+919999999993",
+      MessageSid: "MM_FILENAME_ONLY_PDF",
+      Body: "HRD_notes_4.pdf",
+      NumMedia: "1",
+      MediaUrl0: "https://example.test/hrd-notes.pdf",
+      MediaContentType0: "application/pdf",
+      pageCount: "71"
+    });
+
+    const response = await app.request(
+      "/webhooks/whatsapp",
+      { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body },
+      env
+    );
+
+    expect(response.status).toBe(200);
+    const text = await response.text();
+    expect(text).toContain("How many copies");
+
+    const [order] = await store.listOrders();
+    expect(order.status).toBe("AWAITING_DETAILS");
+    expect(order.printOptions.pageCount).toBe(71);
+
+    const messages = await store.listInboundMessagesForOrder(order.id);
+    expect(messages).toHaveLength(1);
+  });
+
+  it("does not reuse an older uploaded PDF for a fresh text-only PDF request", async () => {
+    const store = new MemoryTobiStore();
+    const app = createApp(store);
+    const customer = await store.upsertCustomer({ whatsappNumber: "whatsapp:+919999999982" });
+    const previousOrder = await store.createOrder({ customerId: customer.id, shopId: "shop_demo" });
+    await store.addOrderFile({
+      orderId: previousOrder.id,
+      originalFilename: "old-notes.pdf",
+      mimeType: "application/pdf",
+      r2Key: "orders/old-notes.pdf",
+      pageCount: 71,
+      fileSizeBytes: 1000
+    });
+    await store.transitionOrder(previousOrder.id, "AWAITING_DETAILS");
+    const body = new URLSearchParams({
+      From: "whatsapp:+919999999982",
+      MessageSid: "SM_FRESH_PDF_REQUEST_AFTER_OLD_ORDER",
+      Body: "I want to print a new PDF",
+      NumMedia: "0"
+    });
+
+    const response = await app.request(
+      "/webhooks/whatsapp",
+      { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body },
+      env
+    );
+
+    const text = await response.text();
+    expect(text).toContain("Please send the PDF file");
+
+    const orders = await store.listOrders();
+    const freshOrder = orders.find((candidate) => candidate.files.length === 0);
+    const oldOrder = orders.find((candidate) => candidate.id === previousOrder.id);
+    expect(orders).toHaveLength(2);
+    expect(freshOrder?.status).toBe("AWAITING_FILE");
+    expect(oldOrder?.files[0]?.originalFilename).toBe("old-notes.pdf");
+  });
+
+  it("answers which PDF is active instead of treating the question as print specs", async () => {
+    const store = new MemoryTobiStore();
+    const app = createApp(store);
+    const customer = await store.upsertCustomer({ whatsappNumber: "whatsapp:+919999999983" });
+    const order = await store.createOrder({ customerId: customer.id, shopId: "shop_demo" });
+    await store.addOrderFile({
+      orderId: order.id,
+      originalFilename: "HRD_notes_4.pdf",
+      mimeType: "application/pdf",
+      r2Key: "orders/hrd-notes.pdf",
+      pageCount: 71,
+      fileSizeBytes: 1000
+    });
+    await store.updatePrintOptions(order.id, { copies: 6 });
+    await store.transitionOrder(order.id, "AWAITING_DETAILS");
+    const body = new URLSearchParams({
+      From: "whatsapp:+919999999983",
+      MessageSid: "SM_WHICH_PDF_ACTIVE",
+      Body: "black and white but which pdf are you considering for printing?",
+      NumMedia: "0"
+    });
+
+    const response = await app.request(
+      "/webhooks/whatsapp",
+      { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body },
+      env
+    );
+
+    const text = await response.text();
+    expect(text).toContain(`I am currently using order ${order.publicId}`);
+    expect(text).toContain("HRD_notes_4.pdf");
+    expect(text).toContain("71 pages");
+    expect(text).not.toContain("single-sided or double-sided");
+  });
+
   it("understands word-based copy counts in print details", async () => {
     const store = new MemoryTobiStore();
     const app = createApp(store);

@@ -2,7 +2,7 @@ import { Hono } from "hono";
 import { getCookie, setCookie } from "hono/cookie";
 import type { Order, OrderStatus, PrintOrderExtraction, PrintOptions } from "./domain";
 import { calculateQuote, formatPaise } from "./services/pricing";
-import { createAIProvider, type AIProvider } from "./services/extraction";
+import { createAIProvider, extractWithRules, type AIProvider } from "./services/extraction";
 import {
   activeOrderSummary,
   confirmationSummary,
@@ -117,10 +117,12 @@ export function createApp(
       media.contentType.includes("pdf"),
     );
     const ai = createAIProvider(context.env);
-    const initialExtraction = await ai.extractPrintOrder({
-      body: inbound.body,
-      hasFile: inboundHasPdf,
-    });
+    const initialExtraction = shouldUseFastRuleExtraction(inbound.body, inboundHasPdf)
+      ? extractWithRules(inbound.body, inboundHasPdf)
+      : await ai.extractPrintOrder({
+        body: inbound.body,
+        hasFile: inboundHasPdf,
+      });
     const conversationalReply = await replyForNonOrderIntent({
       store,
       ai,
@@ -144,7 +146,11 @@ export function createApp(
       await store.markMessageProcessed(inboundMessage.message.id, "completed");
       return twimlMessage(conversationalReply);
     }
-    let order = shouldReuseActiveOrder(activeOrder, inboundHasPdf)
+    let order = shouldReuseActiveOrder(
+      activeOrder,
+      inboundHasPdf,
+      inbound.body,
+    )
       ? activeOrder
       : await store.createOrder({
         customerId: customer.id,
@@ -221,8 +227,20 @@ export function createApp(
         order.id,
         missing === "file" ? "AWAITING_FILE" : "AWAITING_DETAILS",
       );
+      const reply = questionForMissingField(missing);
+      await store.createMessage({
+        customerId: customer.id,
+        orderId: order.id,
+        direction: "outbound",
+        provider: "demo",
+        processingStatus: "completed",
+        providerMessageId: null,
+        body: reply,
+        mediaCount: 0,
+        rawPayloadJson: JSON.stringify({ flow: "missing_field", field: missing }),
+      });
       await store.markMessageProcessed(inboundMessage.message.id, "completed");
-      return twimlMessage(questionForMissingField(missing));
+      return twimlMessage(reply);
     }
 
     const quote = calculateQuote({ options: order.printOptions });
@@ -376,6 +394,9 @@ async function extractionWithOrderContext(input: {
     .filter((body): body is string => Boolean(body))
     .join("\n");
   if (!combinedBody) return input.currentExtraction;
+  if (input.hasFile && !hasPrintInstructionDetails(combinedBody)) {
+    return input.currentExtraction;
+  }
 
   const contextual = await input.ai.extractPrintOrder({
     body: combinedBody,
@@ -399,12 +420,25 @@ async function extractionWithOrderContext(input: {
   };
 }
 
+function shouldUseFastRuleExtraction(body: string, hasFile: boolean): boolean {
+  return hasFile && !hasPrintInstructionDetails(body);
+}
+
+function hasPrintInstructionDetails(body: string): boolean {
+  const normalized = body.toLowerCase();
+  return /\b(copy|copies|sets?|bw|b\/w|black|black and white|b&w|colou?r|double|duplex|both sides?|two[- ]sided|2[- ]sided|single|one[- ]sided|1[- ]sided|spiral|staple|soft bind|hard bind|no binding|pickup|at \d{1,2}|by \d{1,2}|[2468][- ]?up|[2468]\s+pages?\s+(?:on|onto|per|in|into|fit|fitted|printed))\b/.test(normalized);
+}
+
 function shouldReuseActiveOrder(
   order: Order | null,
   inboundHasPdf: boolean,
+  inboundBody: string,
 ): order is Order {
   if (!order) return false;
   if (["QUOTE_READY", "PAYMENT_LINK_SENT", "PAYMENT_PENDING", "PAID", "SHOP_NOTIFIED", "ACCEPTED", "PRINTING", "READY_FOR_PICKUP"].includes(order.status)) {
+    return false;
+  }
+  if (!inboundHasPdf && order.files.length > 0 && isFreshPdfRequest(inboundBody)) {
     return false;
   }
   if (!inboundHasPdf) return true;
@@ -421,6 +455,10 @@ async function replyForNonOrderIntent(input: {
 }): Promise<string | null> {
   const { activeOrder, ai, extraction, inboundBody, inboundHasPdf, store } = input;
   if (inboundHasPdf) return null;
+  if (isAskingWhichFile(inboundBody)) {
+    if (!activeOrder?.files.length) return "I do not have a PDF for this order yet. Please send the PDF file you want printed.";
+    return currentFileReply(activeOrder);
+  }
   if (["new_print_order", "provide_order_details"].includes(extraction.intent)) return null;
   if (extraction.intent === "ask_quote" && activeOrder) return null;
 
@@ -465,6 +503,35 @@ async function replyForNonOrderIntent(input: {
   }
 
   return extraction.customerReplyDraft;
+}
+
+function isFreshPdfRequest(body: string): boolean {
+  const normalized = body.toLowerCase().replace(/\s+/g, " ").trim();
+  if (/\b(this|that|same|current|uploaded|sent)\s+(pdf|file|document)\b/.test(normalized)) {
+    return false;
+  }
+  return /\b(print|printing|upload|send|share)\s+(?:(?:a|one|1)\s+)?(?:another|new)?\s*(pdf|file|document)\b/.test(normalized) ||
+    /\b(pdf|file|document)\s+(print|printing|order)\b/.test(normalized);
+}
+
+function isAskingWhichFile(body: string): boolean {
+  const normalized = body.toLowerCase();
+  return /\b(which|what)\s+(pdf|file|document)\b/.test(normalized) ||
+    /\b(pdf|file|document)\s+(are|is)\s+you\s+(considering|using|printing)\b/.test(normalized);
+}
+
+function currentFileReply(order: Order): string {
+  const files = order.files
+    .map((file) => {
+      const name = file.originalFilename ?? "uploaded PDF";
+      const pages = file.pageCount ? `, ${file.pageCount} pages` : "";
+      return `${name}${pages}`;
+    })
+    .join("; ");
+  return [
+    `I am currently using order ${order.publicId}: ${files}.`,
+    "Send the remaining print details for this file, or reply Cancel and send a different PDF.",
+  ].join("\n");
 }
 
 function authoritativePdfPageCount(order: Order): number | null {
