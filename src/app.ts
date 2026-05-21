@@ -3,6 +3,17 @@ import { getCookie, setCookie } from "hono/cookie";
 import type { Order, OrderStatus, PrintOrderExtraction, PrintOptions } from "./domain";
 import { calculateQuote, formatPaise } from "./services/pricing";
 import { createAIProvider, type AIProvider } from "./services/extraction";
+import {
+  activeOrderSummary,
+  confirmationSummary,
+  isCancelReply,
+  isConfirmReply,
+} from "./services/orderMessages";
+import {
+  createCustomerPaymentConfirmation,
+  createShopNotification,
+} from "./services/notifications";
+import { storeInboundPdf } from "./services/pdf";
 import { RazorpayPaymentService } from "./services/razorpay";
 import {
   canTransition,
@@ -15,6 +26,7 @@ import {
   verifyTwilioSignature,
 } from "./services/whatsapp";
 import { createStore, type TobiStore } from "./store";
+import { label } from "./utils/labels";
 
 type AppVariables = {
   store: TobiStore;
@@ -455,15 +467,6 @@ async function replyForNonOrderIntent(input: {
   return extraction.customerReplyDraft;
 }
 
-function activeOrderSummary(order: Order): string {
-  return [
-    `order ${order.publicId}`,
-    `status ${order.status}`,
-    `payment ${order.paymentStatus}`,
-    order.paymentLink ? "payment link available" : "no payment link yet",
-  ].join(", ");
-}
-
 function authoritativePdfPageCount(order: Order): number | null {
   return order.files.find((file) => file.pageCount !== null)?.pageCount ?? null;
 }
@@ -503,89 +506,6 @@ async function handleQuoteConfirmation(input: {
   ].join("\n");
 }
 
-function confirmationSummary(order: Order): string {
-  const quote = order.quoteSnapshot;
-  if (!quote) {
-    throw new Error(`Order ${order.id} does not have a quote to confirm`);
-  }
-  return [
-    `Please confirm your print order ${order.publicId}`,
-    `Pages: ${quote.pages}`,
-    `Copies: ${quote.copies}`,
-    `Color: ${label(order.printOptions.colorMode)}`,
-    `Sides: ${label(order.printOptions.sideMode)}`,
-    `Layout: ${quote.pagesPerSheet}-up`,
-    `Paper: ${order.printOptions.paperSize}`,
-    `Binding: ${label(order.printOptions.bindingType)}`,
-    `Pickup: ${order.printOptions.pickupTime ?? "Anytime"}`,
-    `Billable sheets: ${quote.billableSheets}`,
-    `Total: ${formatPaise(quote.totalPaise)}`,
-    "",
-    "Reply Confirm to get the payment link.",
-    "Reply Cancel to cancel this order.",
-  ].join("\n");
-}
-
-function isConfirmReply(body: string): boolean {
-  return /^(confirm|confirmed|yes|ok|okay|proceed)$/i.test(body.trim());
-}
-
-function isCancelReply(body: string): boolean {
-  return /^(cancel|cancel order|no|stop)$/i.test(body.trim());
-}
-
-async function createShopNotification(
-  store: TobiStore,
-  order: Order,
-): Promise<void> {
-  const body = [
-    `New paid print order: ${order.publicId}`,
-    `Amount paid: ${formatPaise(order.totalPaise)}`,
-    `Files: ${order.files.length}`,
-    `Print: ${label(order.printOptions.colorMode)}, ${label(order.printOptions.sideMode)}, ${order.printOptions.pagesPerSheet}-up, ${order.printOptions.paperSize}`,
-    `Pickup: ${order.printOptions.pickupTime ?? "Anytime"}`,
-  ].join("\n");
-  await store.createMessage({
-    customerId: null,
-    orderId: order.id,
-    direction: "outbound",
-    provider: "demo",
-    processingStatus: "completed",
-    providerMessageId: null,
-    body,
-    mediaCount: 0,
-    rawPayloadJson: JSON.stringify({ notification: "shop_paid_order" }),
-  });
-  await store.addOrderEvent(order.id, "shop_notified", {
-    channel: "demo",
-    body,
-  });
-}
-
-async function createCustomerPaymentConfirmation(
-  store: TobiStore,
-  order: Order,
-): Promise<void> {
-  const body = `Payment confirmed for ${order.publicId}. The shop has received your order and will update you when it is ready.`;
-  await store.createMessage({
-    customerId: order.customerId,
-    orderId: order.id,
-    direction: "outbound",
-    provider: "demo",
-    processingStatus: "completed",
-    providerMessageId: null,
-    body,
-    mediaCount: 0,
-    rawPayloadJson: JSON.stringify({
-      notification: "customer_payment_confirmed",
-    }),
-  });
-  await store.addOrderEvent(order.id, "customer_payment_confirmed", {
-    channel: "demo",
-    body,
-  });
-}
-
 function publicOrder(order: Order): Record<string, unknown> {
   return {
     publicId: order.publicId,
@@ -594,61 +514,6 @@ function publicOrder(order: Order): Record<string, unknown> {
     totalPaise: order.totalPaise,
     pickupCode: order.pickupCode,
   };
-}
-
-async function storeInboundPdf(
-  env: Env,
-  mediaUrl: string,
-  r2Key: string,
-  contentType: string,
-): Promise<{
-  r2Key: string;
-  fileSizeBytes: number | null;
-  pageCount: number | null;
-}> {
-  if (!env.FILES)
-    throw new Error("R2 FILES binding is required for PDF intake");
-  let response: Response;
-  try {
-    response = await fetch(mediaUrl, {
-      headers: twilioMediaHeaders(env),
-    });
-  } catch (error) {
-    throw new Error(
-      `Unable to fetch inbound PDF media: ${error instanceof Error ? error.message : "unknown error"}`,
-    );
-  }
-  if (!response.ok || !response.body) {
-    throw new Error(
-      `Unable to fetch inbound PDF media: HTTP ${response.status}`,
-    );
-  }
-  const bytes = new Uint8Array(await response.arrayBuffer());
-  await env.FILES.put(r2Key, bytes, {
-    httpMetadata: { contentType },
-  });
-  return {
-    r2Key,
-    fileSizeBytes: bytes.byteLength,
-    pageCount: countPdfPages(bytes),
-  };
-}
-
-function twilioMediaHeaders(env: Env): HeadersInit {
-  if (!env.TWILIO_ACCOUNT_SID || !env.TWILIO_AUTH_TOKEN) return {};
-  return {
-    Authorization: `Basic ${btoa(`${env.TWILIO_ACCOUNT_SID}:${env.TWILIO_AUTH_TOKEN}`)}`,
-  };
-}
-
-function countPdfPages(bytes: Uint8Array): number | null {
-  const text = new TextDecoder("latin1").decode(bytes);
-  const matches = text.match(/\/Type\s*\/Page\b/g);
-  return matches?.length || null;
-}
-
-function label(value: string | null): string {
-  return (value ?? "not set").replaceAll("_", " ");
 }
 
 function escapeHtml(value: unknown): string {

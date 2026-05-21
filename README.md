@@ -272,12 +272,13 @@ The tests cover:
 
 ```text
 src/
-  app.ts                 Hono routes, WhatsApp flow, dashboard HTML
+  app.ts                 Hono route wiring, WhatsApp flow, dashboard HTML
   domain.ts              Zod schemas and domain types
   index.ts               Worker entrypoint
   store.ts               D1 and in-memory stores
   db/migrations/         D1 migrations
-  services/              Extraction, pricing, payments, storage helpers
+  services/              Extraction, pricing, payments, PDF intake, notifications
+  utils/                 Shared formatting and ID helpers
 tests/                   Vitest coverage
 assets/                  Product and README assets
 wrangler.toml            Cloudflare Worker bindings and deploy config
