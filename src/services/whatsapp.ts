@@ -1,76 +1,138 @@
 import type { InboundWhatsAppMessage } from "../domain";
+import type { WorkflowAction } from "./messageWorkflow";
 
-export async function verifyTwilioSignature(request: Request, authToken: string, publicAppUrl?: string): Promise<boolean> {
-  const signature = request.headers.get("x-twilio-signature");
-  if (!signature) return false;
-  const contentType = request.headers.get("content-type") ?? "";
-  if (!contentType.includes("application/x-www-form-urlencoded") && !contentType.includes("multipart/form-data")) {
-    return false;
-  }
+export type WhatsAppProvider = "twilio_sandbox" | "meta_cloud_api";
 
-  const url = new URL(request.url);
-  const configuredBase = publicAppUrl ? new URL(publicAppUrl) : null;
-  const webhookUrl = `${configuredBase?.origin ?? url.origin}${url.pathname}${url.search}`;
-  const form = await request.clone().formData();
-  const pairs = Array.from(form.entries())
-    .filter((entry): entry is [string, string] => typeof entry[1] === "string")
-    .sort(([left], [right]) => left.localeCompare(right));
-  const signedPayload = pairs.reduce((payload, [key, value]) => `${payload}${key}${value}`, webhookUrl);
-  const expected = await hmacSha1Base64(signedPayload, authToken);
+export async function verifyMetaSignature(request: Request, appSecret: string): Promise<boolean> {
+  const signature = request.headers.get("x-hub-signature-256");
+  if (!signature?.startsWith("sha256=")) return false;
+  const body = await request.clone().text();
+  const expected = `sha256=${await hmacSha256Hex(body, appSecret)}`;
   return timingSafeEqual(signature, expected);
 }
 
-export async function parseInboundWhatsApp(request: Request): Promise<InboundWhatsAppMessage> {
-  const contentType = request.headers.get("content-type") ?? "";
-  const raw: Record<string, unknown> = {};
-
-  if (contentType.includes("application/json")) {
-    Object.assign(raw, await request.json());
-  } else {
-    const form = await request.formData();
-    for (const [key, value] of form.entries()) {
-    raw[key] = typeof value === "string" ? value : String(value);
-    }
+export function verifyMetaWebhookChallenge(url: URL, verifyToken?: string): Response {
+  const mode = url.searchParams.get("hub.mode");
+  const token = url.searchParams.get("hub.verify_token");
+  const challenge = url.searchParams.get("hub.challenge");
+  if (mode === "subscribe" && challenge && verifyToken && token === verifyToken) {
+    return new Response(challenge, {
+      headers: { "content-type": "text/plain; charset=utf-8" },
+    });
   }
+  return new Response("Forbidden", { status: 403 });
+}
 
-  const mediaCount = Number(raw.NumMedia ?? raw.mediaCount ?? 0);
-  const media = Array.from({ length: mediaCount }, (_, index) => ({
-    url: String(raw[`MediaUrl${index}`] ?? raw.mediaUrl ?? ""),
-    contentType: String(raw[`MediaContentType${index}`] ?? raw.contentType ?? "application/pdf"),
-    filename: typeof raw[`MediaFilename${index}`] === "string" ? String(raw[`MediaFilename${index}`]) : null,
-    sizeBytes: raw.fileSizeBytes ? Number(raw.fileSizeBytes) : null,
-    pageCount: raw.pageCount ? Number(raw.pageCount) : null
-  })).filter((item) => item.url || item.contentType);
+export async function parseInboundMetaWhatsApp(request: Request): Promise<InboundWhatsAppMessage | null> {
+  const raw = (await request.json()) as MetaWebhookPayload;
+  const value = raw.entry?.[0]?.changes?.[0]?.value;
+  const message = value?.messages?.[0];
+  if (!value || !message) return null;
 
+  const contact = value.contacts?.[0];
+  const from = `whatsapp:+${message.from.replace(/^\+/, "")}`;
+  const media = mediaFromMetaMessage(message);
   return {
-    from: String(raw.From ?? raw.from ?? "whatsapp:+910000000000"),
-    body: String(raw.Body ?? raw.body ?? ""),
-    providerMessageId: typeof raw.MessageSid === "string" ? raw.MessageSid : typeof raw.messageId === "string" ? raw.messageId : null,
+    from,
+    body: textFromMetaMessage(message),
+    providerMessageId: message.id ?? null,
     media,
-    raw
+    raw: raw as unknown as Record<string, unknown>,
+    senderName: contact?.profile?.name ?? null,
   };
 }
 
-export function twimlMessage(body: string): Response {
-  const escaped = body.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
-  return new Response(`<Response><Message>${escaped}</Message></Response>`, {
-    headers: { "content-type": "text/xml; charset=utf-8" }
-  });
+export async function sendMetaWhatsAppText(env: Env, to: string, body: string): Promise<string | null> {
+  if (!env.WHATSAPP_ACCESS_TOKEN || !env.WHATSAPP_PHONE_NUMBER_ID) {
+    throw new Error("WHATSAPP_ACCESS_TOKEN and WHATSAPP_PHONE_NUMBER_ID are required for Meta WhatsApp replies");
+  }
+  const recipient = to.replace(/^whatsapp:/, "").replace(/^\+/, "");
+  const version = env.WHATSAPP_GRAPH_API_VERSION ?? "v25.0";
+  const response = await fetch(
+    `https://graph.facebook.com/${version}/${env.WHATSAPP_PHONE_NUMBER_ID}/messages`,
+    {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${env.WHATSAPP_ACCESS_TOKEN}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        messaging_product: "whatsapp",
+        recipient_type: "individual",
+        to: recipient,
+        type: "text",
+        text: {
+          preview_url: false,
+          body,
+        },
+      }),
+    },
+  );
+  const responseBody = (await response.json().catch(() => null)) as MetaSendResponse | null;
+  if (!response.ok) {
+    throw new Error(`Meta WhatsApp send failed: ${response.status} ${JSON.stringify(responseBody)}`);
+  }
+  return responseBody?.messages?.[0]?.id ?? null;
 }
 
-async function hmacSha1Base64(payload: string, secret: string): Promise<string> {
+export async function sendMetaWhatsAppInteractiveButtons(
+  env: Env,
+  to: string,
+  body: string,
+  actions: WorkflowAction[],
+): Promise<string | null> {
+  if (!env.WHATSAPP_ACCESS_TOKEN || !env.WHATSAPP_PHONE_NUMBER_ID) {
+    throw new Error("WHATSAPP_ACCESS_TOKEN and WHATSAPP_PHONE_NUMBER_ID are required for Meta WhatsApp replies");
+  }
+  const buttons = actions.slice(0, 3).map((action) => ({
+    type: "reply",
+    reply: {
+      id: action.id,
+      title: action.title.slice(0, 20),
+    },
+  }));
+  if (buttons.length === 0) return sendMetaWhatsAppText(env, to, body);
+
+  const recipient = to.replace(/^whatsapp:/, "").replace(/^\+/, "");
+  const version = env.WHATSAPP_GRAPH_API_VERSION ?? "v25.0";
+  const response = await fetch(
+    `https://graph.facebook.com/${version}/${env.WHATSAPP_PHONE_NUMBER_ID}/messages`,
+    {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${env.WHATSAPP_ACCESS_TOKEN}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        messaging_product: "whatsapp",
+        recipient_type: "individual",
+        to: recipient,
+        type: "interactive",
+        interactive: {
+          type: "button",
+          body: { text: body },
+          action: { buttons },
+        },
+      }),
+    },
+  );
+  const responseBody = (await response.json().catch(() => null)) as MetaSendResponse | null;
+  if (!response.ok) {
+    throw new Error(`Meta WhatsApp interactive send failed: ${response.status} ${JSON.stringify(responseBody)}`);
+  }
+  return responseBody?.messages?.[0]?.id ?? null;
+}
+
+async function hmacSha256Hex(payload: string, secret: string): Promise<string> {
   const key = await crypto.subtle.importKey(
     "raw",
     new TextEncoder().encode(secret),
-    { name: "HMAC", hash: "SHA-1" },
+    { name: "HMAC", hash: "SHA-256" },
     false,
-    ["sign"]
+    ["sign"],
   );
   const signature = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(payload));
-  const bytes = new Uint8Array(signature);
-  let binary = "";
-  for (const byte of bytes) binary += String.fromCharCode(byte);
-  return btoa(binary);
+  return Array.from(new Uint8Array(signature), (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
 function timingSafeEqual(a: string, b: string): boolean {
@@ -81,3 +143,78 @@ function timingSafeEqual(a: string, b: string): boolean {
   }
   return result === 0;
 }
+
+function textFromMetaMessage(message: MetaMessage): string {
+  if (message.text?.body) return message.text.body;
+  const buttonReply = message.interactive?.button_reply;
+  if (buttonReply?.id === "confirm_quote") return "Confirm";
+  if (buttonReply?.id === "cancel_order") return "Cancel";
+  if (buttonReply?.title) return buttonReply.title;
+  if (message.document?.filename) return message.document.filename;
+  if (message.image?.caption) return message.image.caption;
+  return "";
+}
+
+function mediaFromMetaMessage(message: MetaMessage): InboundWhatsAppMessage["media"] {
+  if (message.document) {
+    return [
+      {
+        url: `meta:${message.document.id}`,
+        contentType: message.document.mime_type ?? "application/pdf",
+        filename: message.document.filename ?? null,
+        sizeBytes: null,
+        pageCount: null,
+      },
+    ];
+  }
+  if (message.image) {
+    return [
+      {
+        url: `meta:${message.image.id}`,
+        contentType: message.image.mime_type ?? "image/jpeg",
+        filename: null,
+        sizeBytes: null,
+        pageCount: null,
+      },
+    ];
+  }
+  return [];
+}
+
+type MetaWebhookPayload = {
+  entry?: Array<{
+    changes?: Array<{
+      value?: {
+        contacts?: Array<{ profile?: { name?: string } }>;
+        messages?: MetaMessage[];
+      };
+    }>;
+  }>;
+};
+
+type MetaMessage = {
+  from: string;
+  id?: string;
+  type?: string;
+  text?: { body?: string };
+  interactive?: {
+    button_reply?: {
+      id?: string;
+      title?: string;
+    };
+  };
+  document?: {
+    id: string;
+    filename?: string;
+    mime_type?: string;
+  };
+  image?: {
+    id: string;
+    mime_type?: string;
+    caption?: string;
+  };
+};
+
+type MetaSendResponse = {
+  messages?: Array<{ id?: string }>;
+};

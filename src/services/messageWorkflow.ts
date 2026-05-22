@@ -30,7 +30,13 @@ import type { TobiStore } from "../store";
 export type WorkflowResult = {
   orderId: string | null;
   reply: string;
+  actions?: WorkflowAction[];
   audit: Record<string, unknown>;
+};
+
+export type WorkflowAction = {
+  id: "confirm_quote" | "cancel_order";
+  title: string;
 };
 
 export async function handleInboundWorkflow(input: {
@@ -183,6 +189,7 @@ export async function handleInboundWorkflow(input: {
   return {
     orderId: order.id,
     reply: confirmationSummary(order),
+    actions: quoteConfirmationActions(),
     audit: workflowAudit(contextualUnderstanding, validation.rejectedReason, {
       flow: "quote_ready",
     }),
@@ -215,6 +222,7 @@ async function handleQuoteReadyMessage(input: {
     return {
       orderId: requoted.id,
       reply: confirmationSummary(requoted),
+      actions: quoteConfirmationActions(),
       audit: workflowAudit(understanding, validation.rejectedReason, {
         flow: "quote_recalculated",
       }),
@@ -245,6 +253,7 @@ async function handleQuoteReadyMessage(input: {
         "Please confirm, cancel, or change this quote before starting another order.",
         confirmationSummary(activeOrder),
       ].join("\n\n"),
+      actions: quoteConfirmationActions(),
       audit: workflowAudit(understanding, validation.rejectedReason, {
         flow: "quote_waiting_confirmation",
       }),
@@ -285,6 +294,10 @@ async function replyForNonOrderIntent(input: {
     return {
       orderId: activeOrder?.id ?? null,
       reply,
+      actions:
+        activeOrder && canTransition(activeOrder.status, "CANCELLED")
+          ? cancelOrderActions()
+          : undefined,
       audit: workflowAudit(understanding, null, {
         flow: "current_file_question",
       }),
@@ -445,6 +458,9 @@ async function replyForPaymentStartedOrder(input: {
     return {
       orderId: activeOrder.id,
       reply: paymentStartedOrderReply(activeOrder),
+      actions: canTransition(activeOrder.status, "CANCELLED")
+        ? cancelOrderActions()
+        : undefined,
       audit: workflowAudit(understanding, validation.rejectedReason, {
         flow:
           Object.keys(validation.accepted).length > 0
@@ -570,7 +586,7 @@ function currentFileReply(order: Order): string {
     .join("; ");
   return [
     `I am currently using order ${order.publicId}: ${files}.`,
-    "Send the remaining print details for this file, or reply Cancel and send a different PDF.",
+    "Send the remaining print details for this file, or cancel this order and send a different PDF.",
   ].join("\n");
 }
 
@@ -595,12 +611,23 @@ function paymentStartedOrderReply(order: Order): string {
     order.paymentLink
       ? `Payment link: ${order.paymentLink}`
       : "I do not have a payment link for this order yet.",
-    "I cannot automatically change print details after payment has started. Reply Cancel if cancellation is still allowed, or contact the shop team for help.",
+    "I cannot automatically change print details after payment has started. Cancel this order if cancellation is still allowed, or contact the shop team for help.",
   ].join("\n");
 }
 
 function authoritativePdfPageCount(order: Order): number | null {
   return order.files.find((file) => file.pageCount !== null)?.pageCount ?? null;
+}
+
+function quoteConfirmationActions(): WorkflowAction[] {
+  return [
+    { id: "confirm_quote", title: "Confirm" },
+    { id: "cancel_order", title: "Cancel" },
+  ];
+}
+
+function cancelOrderActions(): WorkflowAction[] {
+  return [{ id: "cancel_order", title: "Cancel" }];
 }
 
 function hasPrintInstructionDetails(body: string): boolean {

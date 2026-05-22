@@ -53,6 +53,10 @@ describe("message workflow", () => {
     });
 
     expect(result.reply).toContain("Please confirm your print order");
+    expect(result.actions).toEqual([
+      { id: "confirm_quote", title: "Confirm" },
+      { id: "cancel_order", title: "Cancel" },
+    ]);
     expect((await store.getOrder(order.id))?.printOptions.colorMode).toBe("color");
   });
 
@@ -102,6 +106,10 @@ describe("message workflow", () => {
 
     const updated = await store.getOrder(order.id);
     expect(result.reply).toContain("Please confirm your print order");
+    expect(result.actions).toEqual([
+      { id: "confirm_quote", title: "Confirm" },
+      { id: "cancel_order", title: "Cancel" },
+    ]);
     expect(updated?.status).toBe("QUOTE_READY");
     expect(updated?.printOptions.colorMode).toBe("color");
     expect(updated?.totalPaise).toBeGreaterThan(order.totalPaise);
@@ -158,6 +166,7 @@ describe("message workflow", () => {
     });
 
     expect(result.reply).toContain("cannot automatically change");
+    expect(result.actions).toEqual([{ id: "cancel_order", title: "Cancel" }]);
     expect((await store.getOrder(order.id))?.printOptions.sideMode).toBe("single_sided");
   });
 

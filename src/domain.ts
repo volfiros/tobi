@@ -121,7 +121,7 @@ export type Message = {
   customerId: string | null;
   orderId: string | null;
   direction: "inbound" | "outbound";
-  provider: "twilio_sandbox" | "demo";
+  provider: "twilio_sandbox" | "meta_cloud_api" | "demo";
   processingStatus: "processing" | "completed" | "failed";
   providerMessageId: string | null;
   body: string | null;
@@ -163,6 +163,7 @@ export type InboundWhatsAppMessage = {
   from: string;
   body: string;
   providerMessageId: string | null;
+  senderName?: string | null;
   media: Array<{
     url: string;
     contentType: string;

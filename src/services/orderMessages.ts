@@ -29,8 +29,8 @@ export function confirmationSummary(order: Order): string {
     `Billable sheets: ${quote.billableSheets}`,
     `Total: ${formatPaise(quote.totalPaise)}`,
     "",
-    "Reply Confirm to get the payment link.",
-    "Reply Cancel to cancel this order.",
+    "Confirm to get the payment link.",
+    "Cancel to cancel this order.",
   ].join("\n");
 }
 

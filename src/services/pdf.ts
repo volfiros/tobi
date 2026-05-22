@@ -12,10 +12,13 @@ export async function storeInboundPdf(
 ): Promise<StoredPdf> {
   if (!env.FILES)
     throw new Error("R2 FILES binding is required for PDF intake");
+  const downloadUrl = mediaUrl.startsWith("meta:")
+    ? await getMetaMediaDownloadUrl(env, mediaUrl.slice("meta:".length))
+    : mediaUrl;
   let response: Response;
   try {
-    response = await fetch(mediaUrl, {
-      headers: twilioMediaHeaders(env),
+    response = await fetch(downloadUrl, {
+      headers: mediaHeaders(env, downloadUrl),
     });
   } catch (error) {
     throw new Error(
@@ -38,7 +41,27 @@ export async function storeInboundPdf(
   };
 }
 
-function twilioMediaHeaders(env: Env): HeadersInit {
+async function getMetaMediaDownloadUrl(env: Env, mediaId: string): Promise<string> {
+  if (!env.WHATSAPP_ACCESS_TOKEN) {
+    throw new Error("WHATSAPP_ACCESS_TOKEN is required for Meta WhatsApp media downloads");
+  }
+  const version = env.WHATSAPP_GRAPH_API_VERSION ?? "v25.0";
+  const response = await fetch(`https://graph.facebook.com/${version}/${mediaId}`, {
+    headers: { Authorization: `Bearer ${env.WHATSAPP_ACCESS_TOKEN}` },
+  });
+  const body = (await response.json().catch(() => null)) as { url?: string } | null;
+  if (!response.ok || !body?.url) {
+    throw new Error(`Meta WhatsApp media lookup failed: HTTP ${response.status}`);
+  }
+  return body.url;
+}
+
+function mediaHeaders(env: Env, mediaUrl: string): HeadersInit {
+  if (mediaUrl.includes("lookaside.fbsbx.com") && env.WHATSAPP_ACCESS_TOKEN) {
+    return {
+      Authorization: `Bearer ${env.WHATSAPP_ACCESS_TOKEN}`,
+    };
+  }
   if (!env.TWILIO_ACCOUNT_SID || !env.TWILIO_AUTH_TOKEN) return {};
   return {
     Authorization: `Basic ${btoa(`${env.TWILIO_ACCOUNT_SID}:${env.TWILIO_AUTH_TOKEN}`)}`,

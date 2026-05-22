@@ -1,4 +1,4 @@
-import { Hono } from "hono";
+import { Hono, type Context } from "hono";
 import { getCookie, setCookie } from "hono/cookie";
 import type { Order, OrderStatus } from "./domain";
 import {
@@ -10,15 +10,25 @@ import { handleInboundWorkflow } from "./services/messageWorkflow";
 import { demoPaymentPage, loginPage, orderDetailPage, ordersPage, pageShell } from "./dashboard";
 import { dashboardCss } from "./dashboardStyles";
 import {
+  parseInboundMetaWhatsApp,
+  sendMetaWhatsAppInteractiveButtons,
+  sendMetaWhatsAppText,
+  verifyMetaSignature,
+  verifyMetaWebhookChallenge,
+  type WhatsAppProvider,
+} from "./services/whatsapp";
+import {
   parseInboundWhatsApp,
   twimlMessage,
   verifyTwilioSignature,
-} from "./services/whatsapp";
+} from "./services/twilio";
 import { createStore, type TobiStore } from "./store";
 
 type AppVariables = {
   store: TobiStore;
 };
+
+type AppContext = Context<{ Bindings: Env; Variables: AppVariables }>;
 
 export function createApp(
   store?: TobiStore,
@@ -50,6 +60,11 @@ export function createApp(
   );
 
   app.post("/webhooks/whatsapp", async (context) => {
+    const contentType = context.req.header("content-type") ?? "";
+    if (contentType.includes("application/json")) {
+      return handleMetaWhatsAppWebhook(context);
+    }
+
     if (context.env.TWILIO_AUTH_TOKEN) {
       const verified = await verifyTwilioSignature(
         context.req.raw,
@@ -61,67 +76,19 @@ export function createApp(
       return context.text("TWILIO_AUTH_TOKEN is required in production", 500);
     }
 
-    const store = context.get("store");
     const inbound = await parseInboundWhatsApp(context.req.raw);
-    const inboundMessage = await store.tryCreateMessage({
-      customerId: null,
-      orderId: null,
-      direction: "inbound",
-      provider: "twilio_sandbox",
-      processingStatus: "processing",
-      providerMessageId: inbound.providerMessageId,
-      body: inbound.body,
-      mediaCount: inbound.media.length,
-      rawPayloadJson: JSON.stringify(inbound.raw),
-    });
-    if (inboundMessage.duplicate)
+    const result = await processInboundWhatsAppMessage(context, inbound, "twilio_sandbox");
+    if (result.duplicate)
       return twimlMessage("Already received this message.");
-    const customer = await store.upsertCustomer({
-      whatsappNumber: inbound.from,
-    });
-    const activeOrder = await store.findActiveOrder(customer.id);
-    let result;
-    try {
-      result = await handleInboundWorkflow({
-        store,
-        env: context.env,
-        customer,
-        inboundMessage: inboundMessage.message,
-        inbound,
-        activeOrder,
-      });
-    } catch (error) {
-      await store.markMessageProcessed(inboundMessage.message.id, "failed");
-      throw error;
-    }
-    if (result.orderId) {
-      await store.attachMessageToOrder(
-        inboundMessage.message.id,
-        result.orderId,
-      );
-      await store.addOrderEvent(
-        result.orderId,
-        "message_understanding_applied",
-        result.audit,
-      );
-    }
-    await store.createMessage({
-      customerId: customer.id,
-      orderId: result.orderId,
-      direction: "outbound",
-      provider: "demo",
-      processingStatus: "completed",
-      providerMessageId: null,
-      body: result.reply,
-      mediaCount: 0,
-      rawPayloadJson: JSON.stringify({
-        flow: "message_workflow",
-        audit: result.audit,
-      }),
-    });
-    await store.markMessageProcessed(inboundMessage.message.id, "completed");
     return twimlMessage(result.reply);
   });
+
+  app.get("/webhooks/whatsapp", (context) =>
+    verifyMetaWebhookChallenge(
+      new URL(context.req.url),
+      context.env.WHATSAPP_VERIFY_TOKEN,
+    ),
+  );
 
   app.post("/webhooks/razorpay", async (context) => {
     const store = context.get("store");
@@ -243,6 +210,145 @@ export function createApp(
   });
 
   return app;
+}
+
+async function handleMetaWhatsAppWebhook(context: AppContext): Promise<Response> {
+  if (context.env.WHATSAPP_APP_SECRET) {
+    const verified = await verifyMetaSignature(
+      context.req.raw,
+      context.env.WHATSAPP_APP_SECRET,
+    );
+    if (!verified) return context.text("Invalid Meta signature", 401);
+  }
+
+  const inbound = await parseInboundMetaWhatsApp(context.req.raw);
+  if (!inbound) return context.json({ ok: true, ignored: true });
+  const result = await processInboundWhatsAppMessage(
+    context,
+    inbound,
+    "meta_cloud_api",
+  );
+  if (!result.duplicate) {
+    const providerMessageId = result.actions?.length
+      ? await sendMetaWhatsAppInteractiveButtons(
+          context.env,
+          inbound.from,
+          result.reply,
+          result.actions,
+        )
+      : await sendMetaWhatsAppText(
+          context.env,
+          inbound.from,
+          result.reply,
+        );
+    await context.get("store").createMessage({
+      customerId: result.customerId,
+      orderId: result.orderId,
+      direction: "outbound",
+      provider: "meta_cloud_api",
+      processingStatus: "completed",
+      providerMessageId,
+      body: result.reply,
+      mediaCount: 0,
+      rawPayloadJson: JSON.stringify({
+        flow: "message_workflow",
+        audit: result.audit,
+        actions: result.actions ?? [],
+      }),
+    });
+  }
+  return context.json({ ok: true, duplicate: result.duplicate });
+}
+
+async function processInboundWhatsAppMessage(
+  context: AppContext,
+  inbound: Awaited<ReturnType<typeof parseInboundWhatsApp>>,
+  provider: WhatsAppProvider,
+): Promise<{
+  customerId: string;
+  orderId: string | null;
+  reply: string;
+  actions?: Awaited<ReturnType<typeof handleInboundWorkflow>>["actions"];
+  audit: Record<string, unknown>;
+  duplicate: boolean;
+}> {
+  const store = context.get("store");
+  const inboundMessage = await store.tryCreateMessage({
+    customerId: null,
+    orderId: null,
+    direction: "inbound",
+    provider,
+    processingStatus: "processing",
+    providerMessageId: inbound.providerMessageId,
+    body: inbound.body,
+    mediaCount: inbound.media.length,
+    rawPayloadJson: JSON.stringify(inbound.raw),
+  });
+  const customer = await store.upsertCustomer({
+    whatsappNumber: inbound.from,
+    displayName: inbound.senderName,
+  });
+  if (inboundMessage.duplicate) {
+    return {
+      customerId: customer.id,
+      orderId: inboundMessage.message.orderId,
+      reply: "Already received this message.",
+      audit: { duplicate: true, provider },
+      duplicate: true,
+    };
+  }
+
+  const activeOrder = await store.findActiveOrder(customer.id);
+  let result;
+  try {
+    result = await handleInboundWorkflow({
+      store,
+      env: context.env,
+      customer,
+      inboundMessage: inboundMessage.message,
+      inbound,
+      activeOrder,
+    });
+  } catch (error) {
+    await store.markMessageProcessed(inboundMessage.message.id, "failed");
+    throw error;
+  }
+  if (result.orderId) {
+    await store.attachMessageToOrder(
+      inboundMessage.message.id,
+      result.orderId,
+    );
+    await store.addOrderEvent(
+      result.orderId,
+      "message_understanding_applied",
+      result.audit,
+    );
+  }
+  if (provider === "twilio_sandbox") {
+    await store.createMessage({
+      customerId: customer.id,
+      orderId: result.orderId,
+      direction: "outbound",
+      provider: "demo",
+      processingStatus: "completed",
+      providerMessageId: null,
+      body: result.reply,
+      mediaCount: 0,
+      rawPayloadJson: JSON.stringify({
+        flow: "message_workflow",
+        audit: result.audit,
+      }),
+    });
+  }
+  await store.markMessageProcessed(inboundMessage.message.id, "completed");
+  return {
+    customerId: customer.id,
+    orderId: result.orderId,
+    reply: result.reply,
+    actions: result.actions,
+    audit: result.audit,
+    duplicate: false,
+  };
 }
 
 function publicOrder(order: Order): Record<string, unknown> {

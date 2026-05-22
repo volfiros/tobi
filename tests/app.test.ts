@@ -1,7 +1,7 @@
 import { createApp } from "../src/app";
 import { MemoryTobiStore } from "../src/store";
 import { hmacSha256Hex } from "../src/services/razorpay";
-import { verifyTwilioSignature } from "../src/services/whatsapp";
+import { verifyTwilioSignature } from "../src/services/twilio";
 
 const env = {
   APP_ENV: "test",
@@ -200,8 +200,8 @@ describe("Tobi app", () => {
     expect(text).toContain("Please confirm your print order TOBI-");
     expect(text).toContain("Pages: 18");
     expect(text).toContain("Copies: 2");
-    expect(text).toContain("Reply Confirm to get the payment link.");
-    expect(text).toContain("Reply Cancel to cancel this order.");
+    expect(text).toContain("Confirm to get the payment link.");
+    expect(text).toContain("Cancel to cancel this order.");
     expect(text).not.toContain("[ Confirm ]");
     expect(text).not.toContain("Pay here:");
 
@@ -825,6 +825,238 @@ describe("Tobi app", () => {
     await expect(verifyTwilioSignature(request, "twilio-secret", "http://localhost:8787")).resolves.toBe(true);
   });
 
+  it("verifies Meta webhook challenge tokens", async () => {
+    const app = createApp(new MemoryTobiStore());
+    const metaEnv = {
+      ...env,
+      WHATSAPP_VERIFY_TOKEN: "verify-token",
+    } as unknown as Env;
+
+    const response = await app.request(
+      "/webhooks/whatsapp?hub.mode=subscribe&hub.verify_token=verify-token&hub.challenge=challenge-code",
+      {},
+      metaEnv,
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.text()).toBe("challenge-code");
+  });
+
+  it("accepts Meta WhatsApp messages and sends replies through Graph API", async () => {
+    const store = new MemoryTobiStore();
+    const app = createApp(store);
+    const metaEnv = {
+      ...env,
+      WHATSAPP_ACCESS_TOKEN: "test-meta-token",
+      WHATSAPP_PHONE_NUMBER_ID: "1052415724631354",
+      WHATSAPP_GRAPH_API_VERSION: "v25.0",
+    } as unknown as Env;
+    const graphRequests: Array<{ url: string; body: MetaSendBody }> = [];
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes("graph.facebook.com")) {
+        graphRequests.push({
+          url,
+          body: JSON.parse(String(init?.body)) as MetaSendBody,
+        });
+        return Response.json({ messages: [{ id: "wamid.OUTBOUND" }] });
+      }
+      return new Response(pdfWithPages(1), {
+        headers: { "content-type": "application/pdf" },
+      });
+    }) as typeof fetch;
+
+    const response = await app.request(
+      "/webhooks/whatsapp",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          object: "whatsapp_business_account",
+          entry: [
+            {
+              id: "35754282604220160",
+              changes: [
+                {
+                  field: "messages",
+                  value: {
+                    messaging_product: "whatsapp",
+                    metadata: { phone_number_id: "1052415724631354" },
+                    contacts: [
+                      {
+                        wa_id: "919999999970",
+                        profile: { name: "Meta Tester" },
+                      },
+                    ],
+                    messages: [
+                      {
+                        from: "919999999970",
+                        id: "wamid.INBOUND",
+                        timestamp: "1710000000",
+                        type: "text",
+                        text: { body: "hello" },
+                      },
+                    ],
+                  },
+                },
+              ],
+            },
+          ],
+        }),
+      },
+      metaEnv,
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ ok: true, duplicate: false });
+    const graphRequest = graphRequests[0];
+    expect(graphRequest?.url).toBe("https://graph.facebook.com/v25.0/1052415724631354/messages");
+    expect(graphRequest?.body).toMatchObject({
+      messaging_product: "whatsapp",
+      to: "919999999970",
+      type: "text",
+      text: {
+        preview_url: false,
+      },
+    });
+    expect(graphRequest?.body.text?.body).toContain("What would you like to print today");
+    expect(await store.listOrders()).toHaveLength(0);
+  });
+
+  it("sends Meta quote confirmation as interactive buttons", async () => {
+    const store = new MemoryTobiStore();
+    const app = createApp(store);
+    const customer = await store.upsertCustomer({ whatsappNumber: "whatsapp:+919999999971" });
+    let order = await store.createOrder({ customerId: customer.id, shopId: "shop_demo" });
+    await store.addOrderFile({
+      orderId: order.id,
+      originalFilename: "notes.pdf",
+      mimeType: "application/pdf",
+      r2Key: "orders/notes.pdf",
+      pageCount: 10,
+      fileSizeBytes: 1000,
+    });
+    order = await store.updatePrintOptions(order.id, {
+      pageCount: 10,
+      copies: 1,
+      colorMode: "black_and_white",
+      sideMode: "single_sided",
+    });
+    await store.setQuote(order.id, {
+      pages: 10,
+      copies: 1,
+      pagesPerSheet: 1,
+      billableSheets: 10,
+      lineItems: [{ label: "Printing", amountPaise: 2000 }],
+      totalPaise: 2200,
+      currency: "INR",
+    });
+    const metaEnv = {
+      ...env,
+      WHATSAPP_ACCESS_TOKEN: "test-meta-token",
+      WHATSAPP_PHONE_NUMBER_ID: "1052415724631354",
+      WHATSAPP_GRAPH_API_VERSION: "v25.0",
+    } as unknown as Env;
+    const graphRequests: Array<{ url: string; body: MetaSendBody }> = [];
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      graphRequests.push({
+        url: String(input),
+        body: JSON.parse(String(init?.body)) as MetaSendBody,
+      });
+      return Response.json({ messages: [{ id: "wamid.OUTBOUND_BUTTONS" }] });
+    }) as typeof fetch;
+
+    const response = await app.request(
+      "/webhooks/whatsapp",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(metaTextPayload("919999999971", "wamid.ASK_QUOTE", "how much now?")),
+      },
+      metaEnv,
+    );
+
+    expect(response.status).toBe(200);
+    expect(graphRequests[0]?.body).toMatchObject({
+      messaging_product: "whatsapp",
+      to: "919999999971",
+      type: "interactive",
+      interactive: {
+        type: "button",
+        action: {
+          buttons: [
+            { type: "reply", reply: { id: "confirm_quote", title: "Confirm" } },
+            { type: "reply", reply: { id: "cancel_order", title: "Cancel" } },
+          ],
+        },
+      },
+    });
+    expect(graphRequests[0]?.body.interactive?.body.text).toContain("Please confirm your print order");
+  });
+
+  it("accepts Meta interactive confirm button replies", async () => {
+    const store = new MemoryTobiStore();
+    const app = createApp(store);
+    const customer = await store.upsertCustomer({ whatsappNumber: "whatsapp:+919999999972" });
+    let order = await store.createOrder({ customerId: customer.id, shopId: "shop_demo" });
+    await store.addOrderFile({
+      orderId: order.id,
+      originalFilename: "notes.pdf",
+      mimeType: "application/pdf",
+      r2Key: "orders/notes.pdf",
+      pageCount: 10,
+      fileSizeBytes: 1000,
+    });
+    order = await store.updatePrintOptions(order.id, {
+      pageCount: 10,
+      copies: 1,
+      colorMode: "black_and_white",
+      sideMode: "single_sided",
+    });
+    order = await store.setQuote(order.id, {
+      pages: 10,
+      copies: 1,
+      pagesPerSheet: 1,
+      billableSheets: 10,
+      lineItems: [{ label: "Printing", amountPaise: 2000 }],
+      totalPaise: 2200,
+      currency: "INR",
+    });
+    const metaEnv = {
+      ...env,
+      WHATSAPP_ACCESS_TOKEN: "test-meta-token",
+      WHATSAPP_PHONE_NUMBER_ID: "1052415724631354",
+      WHATSAPP_GRAPH_API_VERSION: "v25.0",
+    } as unknown as Env;
+    const graphRequests: Array<{ url: string; body: MetaSendBody }> = [];
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      graphRequests.push({
+        url: String(input),
+        body: JSON.parse(String(init?.body)) as MetaSendBody,
+      });
+      return Response.json({ messages: [{ id: "wamid.OUTBOUND_PAYMENT" }] });
+    }) as typeof fetch;
+
+    const response = await app.request(
+      "/webhooks/whatsapp",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(metaButtonReplyPayload("919999999972", "wamid.CONFIRM", "confirm_quote", "Confirm")),
+      },
+      metaEnv,
+    );
+
+    expect(response.status).toBe(200);
+    expect((await store.getOrder(order.id))?.status).toBe("PAYMENT_LINK_SENT");
+    expect(graphRequests[0]?.body).toMatchObject({
+      to: "919999999972",
+      type: "text",
+    });
+    expect(graphRequests[0]?.body.text?.body).toContain(`Confirmed ${order.publicId}`);
+    expect(graphRequests[0]?.body.text?.body).toContain("Pay here:");
+  });
+
   it("marks an order paid exactly once from signed Razorpay webhook", async () => {
     const store = new MemoryTobiStore();
     const app = createApp(store);
@@ -984,3 +1216,90 @@ async function hmacSha1Base64(payload: string, secret: string): Promise<string> 
   const signature = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(payload));
   return Buffer.from(signature).toString("base64");
 }
+
+function metaTextPayload(from: string, id: string, body: string): Record<string, unknown> {
+  return {
+    object: "whatsapp_business_account",
+    entry: [
+      {
+        changes: [
+          {
+            field: "messages",
+            value: {
+              messaging_product: "whatsapp",
+              contacts: [{ wa_id: from, profile: { name: "Meta Tester" } }],
+              messages: [
+                {
+                  from,
+                  id,
+                  timestamp: "1710000000",
+                  type: "text",
+                  text: { body },
+                },
+              ],
+            },
+          },
+        ],
+      },
+    ],
+  };
+}
+
+function metaButtonReplyPayload(
+  from: string,
+  id: string,
+  buttonId: string,
+  title: string,
+): Record<string, unknown> {
+  return {
+    object: "whatsapp_business_account",
+    entry: [
+      {
+        changes: [
+          {
+            field: "messages",
+            value: {
+              messaging_product: "whatsapp",
+              contacts: [{ wa_id: from, profile: { name: "Meta Tester" } }],
+              messages: [
+                {
+                  from,
+                  id,
+                  timestamp: "1710000000",
+                  type: "interactive",
+                  interactive: {
+                    type: "button_reply",
+                    button_reply: { id: buttonId, title },
+                  },
+                },
+              ],
+            },
+          },
+        ],
+      },
+    ],
+  };
+}
+
+type MetaSendBody = {
+  messaging_product: string;
+  to: string;
+  type: "text" | "interactive";
+  text?: {
+    preview_url: boolean;
+    body: string;
+  };
+  interactive?: {
+    type: "button";
+    body: { text: string };
+    action: {
+      buttons: Array<{
+        type: "reply";
+        reply: {
+          id: string;
+          title: string;
+        };
+      }>;
+    };
+  };
+};

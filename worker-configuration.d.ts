@@ -14,6 +14,12 @@ interface Env {
   TWILIO_ACCOUNT_SID?: string;
   TWILIO_AUTH_TOKEN?: string;
   TWILIO_WHATSAPP_FROM?: string;
+  WHATSAPP_ACCESS_TOKEN?: string;
+  WHATSAPP_APP_SECRET?: string;
+  WHATSAPP_VERIFY_TOKEN?: string;
+  WHATSAPP_PHONE_NUMBER_ID?: string;
+  WHATSAPP_BUSINESS_ACCOUNT_ID?: string;
+  WHATSAPP_GRAPH_API_VERSION?: string;
   DB: D1Database;
   FILES: R2Bucket;
   SESSIONS: KVNamespace;
