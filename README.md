@@ -10,8 +10,6 @@ The app is built as a Hono app on Cloudflare Workers with Cloudflare D1, R2, KV,
 
 https://github.com/user-attachments/assets/06b11db9-f4dc-41f5-aea3-562f63291ea4
 
-[Open the demo page](https://volfiros.github.io/tobi/demo/)
-
 ## Product Flow
 
 1. A customer messages the WhatsApp Cloud API business number.
