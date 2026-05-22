@@ -131,7 +131,7 @@ export function createApp(
   });
 
   app.get("/", (context) => context.redirect("/dashboard/orders"));
-  app.get("/dashboard/styles.css", (context) =>
+  app.get("/dashboard/styles.css", () =>
     new Response(dashboardCss, {
       headers: {
         "content-type": "text/css; charset=utf-8",

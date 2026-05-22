@@ -3,7 +3,6 @@ import type {
   InboundWhatsAppMessage,
   Message,
   Order,
-  PrintOptions,
 } from "../domain";
 import { calculateQuote, formatPaise } from "./pricing";
 import {

@@ -17,8 +17,6 @@ export const orderStatuses = [
   "FAILED"
 ] as const;
 
-export const terminalStatuses = ["COMPLETED", "CANCELLED", "FAILED"] as const;
-
 export const printOptionsSchema = z.object({
   copies: z.number().int().positive().nullable().default(null),
   colorMode: z.enum(["black_and_white", "color"]).nullable().default(null),

@@ -23,19 +23,6 @@
       transform-origin: center;
     }
 
-    .dot {
-      animation: pulse 2.4s ease-in-out infinite;
-      transform-origin: center;
-    }
-
-    .dot-2 {
-      animation-delay: .25s;
-    }
-
-    .dot-3 {
-      animation-delay: .5s;
-    }
-
     .spark {
       animation: sparkle 3.8s ease-in-out infinite;
       transform-origin: center;
@@ -62,11 +49,6 @@
       65% { transform: translateY(14px); opacity: .75; }
     }
 
-    @keyframes pulse {
-      0%, 100% { transform: scale(.92); opacity: .55; }
-      50% { transform: scale(1.08); opacity: 1; }
-    }
-
     @keyframes sparkle {
       0%, 35%, 100% { transform: scale(.72) rotate(0deg); opacity: .18; }
       50% { transform: scale(1.08) rotate(12deg); opacity: .9; }
@@ -91,7 +73,6 @@
     @media (prefers-reduced-motion: reduce) {
       .paper,
       .scanner,
-      .dot,
       .spark,
       .wordmark {
         animation: none;

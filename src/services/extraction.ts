@@ -130,7 +130,7 @@ function draftReplyForIntent(
 }
 
 function draftGeneralConversationReply(body: string, normalized: string): string {
-  const specificReply = specificGeneralConversationReply(body, normalized);
+  const specificReply = specificGeneralConversationReply(normalized);
   if (specificReply) return specificReply;
 
   if (/^(hi|hello|hey|namaste|yo)\b[!. ]*$/.test(normalized.trim())) {
@@ -145,7 +145,7 @@ function draftGeneralConversationReply(body: string, normalized: string): string
   return "I understand. For this demo I can help with print orders, quotes, payment links, and order status. Send a PDF or tell me what you want printed.";
 }
 
-function specificGeneralConversationReply(body: string, normalized: string): string | null {
+function specificGeneralConversationReply(normalized: string): string | null {
   if (/\b(what do you do|who are you|what can you do|help me with)\b/.test(normalized)) {
     return "I am Tobi, a print-order assistant. I can collect your PDF and print options, prepare a quote, send a test payment link, and help track the order until pickup.";
   }

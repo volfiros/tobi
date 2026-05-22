@@ -6,7 +6,8 @@ Install dependencies:
 bun install
 ```
 
-Create `.dev.vars` from `.dev.vars.example`, then run:
+Create `.dev.vars` from `.dev.vars.example`, fill the local Meta WhatsApp Cloud API, Gemini,
+and Razorpay values you need, then run:
 
 ```bash
 bun run dev

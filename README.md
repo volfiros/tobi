@@ -4,11 +4,11 @@
 
 Tobi is a WhatsApp-first print-ordering demo for Indian print shops. Customers send a PDF and print instructions in WhatsApp, Tobi uses a hybrid AI understanding layer to interpret the message, asks for missing details, prepares a deterministic quote, sends a Razorpay Test Mode payment link, and updates a shop dashboard when payment is confirmed.
 
-The app is built as a Hono app on Cloudflare Workers with Cloudflare D1, R2, KV, Twilio WhatsApp Sandbox, Gemini message understanding, and Razorpay Test Mode webhooks.
+The app is built as a Hono app on Cloudflare Workers with Cloudflare D1, R2, KV, Meta WhatsApp Cloud API (MetaCloud) webhooks, Gemini message understanding, and Razorpay Test Mode webhooks. Twilio sandbox parsing remains only as a legacy fallback for form-encoded smoke tests.
 
 ## Product Flow
 
-1. A customer messages the Twilio WhatsApp Sandbox.
+1. A customer messages the Meta WhatsApp Cloud API business number.
 2. Tobi receives the inbound webhook at `/webhooks/whatsapp`.
 3. PDF files are stored in R2 and the PDF page count is treated as authoritative.
 4. Gemini returns structured message understanding: intent, confidence, normalized print slots, ambiguity, and optional general-chat reply.
@@ -16,7 +16,7 @@ The app is built as a Hono app on Cloudflare Workers with Cloudflare D1, R2, KV,
 6. Tobi asks for missing information one field at a time.
 7. Tobi shows a confirmation summary with pages, copies, layout, sides, pickup time, billable sheets, and total price.
 8. Before payment starts, customers can change details such as "make it color instead" and Tobi recomputes the quote.
-9. The customer replies `Confirm` or `Cancel`.
+9. The customer taps `Confirm` or `Cancel` when WhatsApp interactive buttons are available, or sends the same words as text.
 10. On confirmation, Tobi creates a Razorpay Test Mode payment link.
 11. Razorpay posts payment events to `/webhooks/razorpay`.
 12. Paid orders appear in the dashboard for shop processing.
@@ -29,6 +29,10 @@ Current Worker URL:
 ```text
 https://tobi.rithvik-padma.workers.dev
 ```
+
+Production WhatsApp test chat:
+
+[Chat with Tobi on WhatsApp](https://wa.me/918074009337?text=Hi%20Tobi%2C%20I%20want%20to%20print%20a%20PDF)
 
 Important routes:
 
@@ -60,8 +64,8 @@ Login is protected by `ADMIN_PIN` and an HTTP-only dashboard session cookie.
 ## Architecture
 
 ```text
-WhatsApp Sandbox
-  -> Twilio webhook
+Meta WhatsApp Cloud API (MetaCloud)
+  -> WhatsApp webhook
   -> Hono Worker
   -> Gemini message understanding
   -> deterministic backend workflow
@@ -86,7 +90,7 @@ Core storage:
 - **D1**: customers, orders, messages, payments, webhook events, order events, pricing rules.
 - **R2**: uploaded PDF files.
 - **KV**: dashboard/session support.
-- **Worker secrets**: Twilio, Razorpay, Gemini, and dashboard credentials.
+- **Worker secrets**: Meta WhatsApp, Razorpay, Gemini, dashboard credentials, and optional Twilio fallback credentials.
 
 ## Local Development
 
@@ -124,7 +128,7 @@ http://localhost:8787/dashboard/login
 
 ## Environment Variables
 
-Required for the complete workflow:
+Required for the complete Meta WhatsApp Cloud API, Gemini, Razorpay, and dashboard workflow:
 
 ```text
 APP_ENV
@@ -134,9 +138,12 @@ DEMO_SHOP_ID
 DEMO_SHOP_NAME
 ADMIN_PIN
 ADMIN_SESSION_TOKEN
-TWILIO_ACCOUNT_SID
-TWILIO_AUTH_TOKEN
-TWILIO_WHATSAPP_FROM
+WHATSAPP_ACCESS_TOKEN
+WHATSAPP_APP_SECRET
+WHATSAPP_VERIFY_TOKEN
+WHATSAPP_PHONE_NUMBER_ID
+WHATSAPP_BUSINESS_ACCOUNT_ID
+WHATSAPP_GRAPH_API_VERSION
 RAZORPAY_KEY_ID
 RAZORPAY_KEY_SECRET
 RAZORPAY_WEBHOOK_SECRET
@@ -144,13 +151,45 @@ GEMINI_API_KEY
 GEMINI_DEFAULT_MODEL
 ```
 
-For local testing without external services, some tests use mocks and fixtures. For real WhatsApp and payment testing, Twilio, Razorpay, and Gemini values are needed.
+Optional for the legacy Twilio sandbox fallback:
+
+```text
+TWILIO_ACCOUNT_SID
+TWILIO_AUTH_TOKEN
+TWILIO_WHATSAPP_FROM
+```
+
+For local testing without external services, some tests use mocks and fixtures. For real WhatsApp and payment testing, Meta WhatsApp Cloud API, Razorpay, and Gemini values are needed. Twilio values are optional and only support the legacy sandbox/form-encoded path.
 
 ## Manual Service Setup
 
-### Twilio WhatsApp Sandbox
+### Meta WhatsApp Cloud API (MetaCloud)
 
-Set the inbound WhatsApp webhook to:
+Set the WhatsApp callback URL to:
+
+```text
+https://<worker-url>/webhooks/whatsapp
+```
+
+Use this verify token:
+
+```text
+WHATSAPP_VERIFY_TOKEN
+```
+
+Subscribe the webhook to WhatsApp message events. Inbound JSON webhooks are handled as Meta WhatsApp Cloud API messages, and outbound replies are sent through the Graph API using:
+
+```text
+WHATSAPP_ACCESS_TOKEN
+WHATSAPP_PHONE_NUMBER_ID
+WHATSAPP_GRAPH_API_VERSION
+```
+
+Set `WHATSAPP_APP_SECRET` to verify `x-hub-signature-256` webhook signatures.
+
+### Legacy Twilio WhatsApp Sandbox
+
+Twilio sandbox support is kept in `src/services/twilio.ts` for fallback smoke tests and older demos. If you use it, set the inbound WhatsApp webhook to:
 
 ```text
 https://<worker-url>/webhooks/whatsapp
@@ -208,13 +247,21 @@ Secrets should be uploaded with Wrangler:
 ```bash
 bunx wrangler secret put ADMIN_PIN
 bunx wrangler secret put ADMIN_SESSION_TOKEN
-bunx wrangler secret put TWILIO_ACCOUNT_SID
-bunx wrangler secret put TWILIO_AUTH_TOKEN
-bunx wrangler secret put TWILIO_WHATSAPP_FROM
+bunx wrangler secret put WHATSAPP_ACCESS_TOKEN
+bunx wrangler secret put WHATSAPP_APP_SECRET
+bunx wrangler secret put WHATSAPP_VERIFY_TOKEN
 bunx wrangler secret put RAZORPAY_KEY_ID
 bunx wrangler secret put RAZORPAY_KEY_SECRET
 bunx wrangler secret put RAZORPAY_WEBHOOK_SECRET
 bunx wrangler secret put GEMINI_API_KEY
+```
+
+Optional legacy Twilio fallback secrets:
+
+```bash
+bunx wrangler secret put TWILIO_ACCOUNT_SID
+bunx wrangler secret put TWILIO_AUTH_TOKEN
+bunx wrangler secret put TWILIO_WHATSAPP_FROM
 ```
 
 ## Pricing Behavior
@@ -268,15 +315,26 @@ The tests cover:
 - N-up layout extraction.
 - Quote calculation.
 - Duplicate inbound message handling.
-- Twilio signature verification.
+- Meta WhatsApp Cloud API webhook handling and outbound Graph API replies.
+- Legacy Twilio signature verification.
 - Razorpay webhook idempotency.
 - Dashboard rendering.
+
+## UX Improvement Backlog
+
+Recommended next improvements based on the current customer and shop flows:
+
+- Show the active order state in every customer reply once an order exists, especially while waiting for file/details/payment.
+- Prefer WhatsApp interactive buttons for quote confirmation, cancellation, and payment-help choices, with text fallbacks for unsupported clients.
+- Add dashboard filters for paid, ready-for-pickup, and stuck orders so shop staff can scan the queue faster.
+- Add a clearer payment-progress message after sending the Razorpay link, including what the customer should do if payment succeeds but the order does not update.
+- Surface file metadata in customer replies after PDF upload, including filename and page count, before asking for missing print options.
 
 ## Demo Limitations
 
 - This is a demo, not a production payment or fulfillment system.
 - Payments use Razorpay Test Mode.
-- WhatsApp is currently tested through Twilio Sandbox.
+- WhatsApp is currently integrated through the Meta WhatsApp Cloud API. Twilio sandbox support is retained only as a fallback test path.
 - The dashboard is PIN-protected, not a full multi-user auth system.
 - V1 is optimized for one demo shop and pickup-only orders.
 - Human review is still recommended before printing real customer documents.
@@ -290,7 +348,7 @@ src/
   index.ts               Worker entrypoint
   store.ts               D1 and in-memory stores
   db/migrations/         D1 migrations
-  services/              Extraction, pricing, payments, PDF intake, notifications
+  services/              WhatsApp, extraction, pricing, payments, PDF intake, notifications
   utils/                 Shared formatting and ID helpers
 tests/                   Vitest coverage
 assets/                  Product and README assets
@@ -312,5 +370,6 @@ bunx wrangler deploy
 
 - Never commit `.dev.vars`, `.env`, API keys, webhook secrets, or dashboard secrets.
 - Keep Razorpay webhook secret and Worker secret in sync.
-- Keep Twilio webhook URL and `PUBLIC_APP_URL` in sync.
+- Keep Meta webhook verify token and app secret in sync with the Worker secrets.
+- Keep Twilio webhook URL and `PUBLIC_APP_URL` in sync only when using the legacy sandbox fallback.
 - Use Test Mode credentials for demos.
