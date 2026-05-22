@@ -6,6 +6,12 @@ Tobi is a WhatsApp-first print-ordering demo for Indian print shops. Customers s
 
 The app is built as a Hono app on Cloudflare Workers with Cloudflare D1, R2, KV, WhatsApp Cloud API webhooks, Gemini message understanding, and Razorpay Test Mode webhooks. Twilio sandbox parsing remains only as a legacy fallback for form-encoded smoke tests.
 
+## Demo Video
+
+<video src="./assets/tobi-demo.mp4" controls width="780" title="Tobi WhatsApp print-ordering demo"></video>
+
+[Watch the demo video](./assets/tobi-demo.mp4)
+
 ## Product Flow
 
 1. A customer messages the WhatsApp Cloud API business number.
