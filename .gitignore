@@ -9,9 +9,6 @@ dist/
 coverage/
 scratch/
 AGENTS.md
-assets/tobi-demo.mp4
-demo/
-.github/workflows/pages.yml
 
 # Local one-off notes and generated guidance dumps
 docs/*.md
