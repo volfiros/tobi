@@ -26,6 +26,23 @@ describe("message understanding", () => {
     });
   });
 
+  it("understands concise copy-count answers against an active order", async () => {
+    const provider = new RuleMessageUnderstandingProvider();
+
+    await expect(
+      provider.understandMessage({
+        body: "three",
+        hasPdf: false,
+        activeOrderSummary: "Order has PDF, missing copies",
+        recentMessages: [],
+        media: [],
+      }),
+    ).resolves.toMatchObject({
+      intent: "update_order_details",
+      slots: { copies: 3 },
+    });
+  });
+
   it("understands indirect color changes against an active order", async () => {
     const provider = new RuleMessageUnderstandingProvider();
 

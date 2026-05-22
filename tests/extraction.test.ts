@@ -57,6 +57,19 @@ describe("mock extraction", () => {
     expect(extractWithRules("Use this one with black and white printing, four pages per sheet. I want two copies.", true).copies).toBe(2);
   });
 
+  it("extracts concise copy-count answers", () => {
+    expect(extractWithRules("three").copies).toBe(3);
+    expect(extractWithRules("2").copies).toBe(2);
+  });
+
+  it("treats no spiral binding as the default staple binding", () => {
+    expect(extractWithRules("black and white double-sided no spiral binding", true).bindingType).toBe("staple");
+  });
+
+  it("treats generic binding requests as spiral binding", () => {
+    expect(extractWithRules("I want binding as well", true).bindingType).toBe("spiral");
+  });
+
   it("classifies printing requests as order workflow intents", () => {
     expect(extractWithRules("I need printing").intent).toBe("provide_order_details");
   });

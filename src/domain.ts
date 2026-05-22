@@ -22,7 +22,7 @@ export const printOptionsSchema = z.object({
   colorMode: z.enum(["black_and_white", "color"]).nullable().default(null),
   sideMode: z.enum(["single_sided", "double_sided"]).nullable().default(null),
   paperSize: z.enum(["A4", "A3", "letter", "legal"]).default("A4"),
-  bindingType: z.enum(["none", "staple", "spiral", "soft_bind", "hard_bind"]).default("none"),
+  bindingType: z.enum(["none", "staple", "spiral", "soft_bind", "hard_bind"]).default("staple"),
   pagesPerSheet: z.union([z.literal(1), z.literal(2), z.literal(4), z.literal(6), z.literal(8)]).default(1),
   fulfillmentType: z.literal("pickup").default("pickup"),
   pickupTime: z.string().nullable().default(null),

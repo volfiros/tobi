@@ -8,5 +8,5 @@ VALUES
   ('rule_a4_color_single', 'shop_demo', 'A4', 'color', 'single_sided', 1000, NULL, 0, datetime('now'), datetime('now')),
   ('rule_a4_color_double', 'shop_demo', 'A4', 'color', 'double_sided', 800, NULL, 0, datetime('now'), datetime('now')),
   ('bind_none', 'shop_demo', 'A4', 'black_and_white', 'single_sided', 0, 'none', 0, datetime('now'), datetime('now')),
-  ('bind_staple', 'shop_demo', 'A4', 'black_and_white', 'single_sided', 0, 'staple', 200, datetime('now'), datetime('now')),
+  ('bind_staple', 'shop_demo', 'A4', 'black_and_white', 'single_sided', 0, 'staple', 0, datetime('now'), datetime('now')),
   ('bind_spiral', 'shop_demo', 'A4', 'black_and_white', 'single_sided', 0, 'spiral', 3000, datetime('now'), datetime('now'));

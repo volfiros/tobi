@@ -46,6 +46,8 @@ export async function handleInboundWorkflow(input: {
   inbound: InboundWhatsAppMessage;
   activeOrder: Order | null;
   understandingProvider?: MessageUnderstandingProvider;
+  boundOrder?: Order | null;
+  skipMediaStorage?: boolean;
 }): Promise<WorkflowResult> {
   const inboundHasPdf = input.inbound.media.some((media) =>
     media.contentType.includes("pdf"),
@@ -89,34 +91,34 @@ export async function handleInboundWorkflow(input: {
   });
   if (conversationalReply) return conversationalReply;
 
-  let order = shouldReuseActiveOrder(
-    input.activeOrder,
-    inboundHasPdf,
-    understanding,
-  )
-    ? input.activeOrder
-    : await input.store.createOrder({
-        customerId: input.customer.id,
-        shopId: input.env.DEMO_SHOP_ID ?? "shop_demo",
-      });
+  let order =
+    input.boundOrder ??
+    (shouldReuseActiveOrder(input.activeOrder, inboundHasPdf, understanding)
+      ? input.activeOrder
+      : await input.store.createOrder({
+          customerId: input.customer.id,
+          shopId: input.env.DEMO_SHOP_ID ?? "shop_demo",
+        }));
   await input.store.attachMessageToOrder(input.inboundMessage.id, order.id);
 
-  for (const [index, media] of input.inbound.media.entries()) {
-    if (!media.contentType.includes("pdf")) continue;
-    const stored = await storeInboundPdf(
-      input.env,
-      media.url,
-      `orders/${order.id}/upload-${index + 1}.pdf`,
-      media.contentType,
-    );
-    await input.store.addOrderFile({
-      orderId: order.id,
-      originalFilename: media.filename ?? `upload-${index + 1}.pdf`,
-      mimeType: media.contentType,
-      r2Key: stored.r2Key,
-      pageCount: stored.pageCount ?? media.pageCount,
-      fileSizeBytes: media.sizeBytes ?? stored.fileSizeBytes,
-    });
+  if (!input.skipMediaStorage) {
+    for (const [index, media] of input.inbound.media.entries()) {
+      if (!media.contentType.includes("pdf")) continue;
+      const stored = await storeInboundPdf(
+        input.env,
+        media.url,
+        `orders/${order.id}/upload-${index + 1}.pdf`,
+        media.contentType,
+      );
+      await input.store.addOrderFile({
+        orderId: order.id,
+        originalFilename: media.filename ?? `upload-${index + 1}.pdf`,
+        mimeType: media.contentType,
+        r2Key: stored.r2Key,
+        pageCount: stored.pageCount ?? media.pageCount,
+        fileSizeBytes: media.sizeBytes ?? stored.fileSizeBytes,
+      });
+    }
   }
 
   order = (await input.store.getOrder(order.id)) ?? order;
@@ -206,9 +208,45 @@ async function handleQuoteReadyMessage(input: {
   const { activeOrder, env, inbound, store, understanding } = input;
   if (!activeOrder || activeOrder.status !== "QUOTE_READY") return null;
 
+  if (understanding.intent === "cancel_order" || isCancelReply(inbound.body)) {
+    const cancelled = await store.transitionOrder(activeOrder.id, "CANCELLED");
+    await store.addOrderEvent(cancelled.id, "customer_cancelled_quote", {
+      channel: "whatsapp",
+    });
+    return {
+      orderId: cancelled.id,
+      reply: `Cancelled order ${cancelled.publicId}.`,
+      audit: workflowAudit(understanding, null, {
+        flow: "quote_cancelled",
+      }),
+    };
+  }
+
+  if (understanding.intent === "confirm_quote" || isConfirmReply(inbound.body)) {
+    const payment = await new RazorpayPaymentService(env).createPaymentRequest(
+      activeOrder,
+    );
+    const order = await store.setPaymentRequest(activeOrder.id, payment);
+    return {
+      orderId: order.id,
+      reply: [
+        `Confirmed ${order.publicId}.`,
+        `Total: ${formatPaise(order.totalPaise)}`,
+        `Pay here: ${payment.paymentLink}`,
+      ].join("\n"),
+      audit: workflowAudit(understanding, null, {
+        flow: "payment_link_sent",
+      }),
+    };
+  }
+
+  const bindingOverride = bindingTypeFromUserText(inbound.body);
   const validation = validateUnderstandingSlots({
     confidence: understanding.confidence,
-    slots: understanding.slots,
+    slots: {
+      ...understanding.slots,
+      ...(bindingOverride ? { bindingType: bindingOverride } : {}),
+    },
     authoritativePageCount: authoritativePdfPageCount(activeOrder),
   });
   if (Object.keys(validation.accepted).length > 0) {
@@ -228,50 +266,15 @@ async function handleQuoteReadyMessage(input: {
     };
   }
 
-  if (understanding.intent === "cancel_order" || isCancelReply(inbound.body)) {
-    const cancelled = await store.transitionOrder(activeOrder.id, "CANCELLED");
-    await store.addOrderEvent(cancelled.id, "customer_cancelled_quote", {
-      channel: "whatsapp",
-    });
-    return {
-      orderId: cancelled.id,
-      reply: `Cancelled order ${cancelled.publicId}.`,
-      audit: workflowAudit(understanding, validation.rejectedReason, {
-        flow: "quote_cancelled",
-      }),
-    };
-  }
-
-  if (
-    understanding.intent !== "confirm_quote" &&
-    !isConfirmReply(inbound.body)
-  ) {
-    return {
-      orderId: activeOrder.id,
-      reply: [
-        "Please confirm, cancel, or change this quote before starting another order.",
-        confirmationSummary(activeOrder),
-      ].join("\n\n"),
-      actions: quoteConfirmationActions(),
-      audit: workflowAudit(understanding, validation.rejectedReason, {
-        flow: "quote_waiting_confirmation",
-      }),
-    };
-  }
-
-  const payment = await new RazorpayPaymentService(env).createPaymentRequest(
-    activeOrder,
-  );
-  const order = await store.setPaymentRequest(activeOrder.id, payment);
   return {
-    orderId: order.id,
+    orderId: activeOrder.id,
     reply: [
-      `Confirmed ${order.publicId}.`,
-      `Total: ${formatPaise(order.totalPaise)}`,
-      `Pay here: ${payment.paymentLink}`,
-    ].join("\n"),
+      "Please confirm, cancel, or change this quote before starting another order.",
+      confirmationSummary(activeOrder),
+    ].join("\n\n"),
+    actions: quoteConfirmationActions(),
     audit: workflowAudit(understanding, validation.rejectedReason, {
-      flow: "payment_link_sent",
+      flow: "quote_waiting_confirmation",
     }),
   };
 }
@@ -634,6 +637,19 @@ function hasPrintInstructionDetails(body: string): boolean {
   return /\b(copy|copies|sets?|bw|b\/w|black|black and white|b&w|colou?r|double|duplex|both sides?|both side|two[- ]sided|2[- ]sided|single|single side|one[- ]sided|1[- ]sided|spiral|staple|soft bind|hard bind|no binding|pickup|at \d{1,2}|by \d{1,2}|[2468][- ]?up|[2468]\s+pages?\s+(?:on|onto|per|in|into|fit|fitted|printed))\b/.test(
     normalized,
   );
+}
+
+function bindingTypeFromUserText(
+  body: string,
+): MessageUnderstanding["slots"]["bindingType"] | null {
+  const normalized = body.toLowerCase();
+  if (/\bspiral\b/.test(normalized)) return "spiral";
+  if (/\bstaple|stapling\b/.test(normalized)) return "staple";
+  if (/\b(no|without)\s+(?:spiral|binding|bind)\b|\bno binding\b|\bnone\b/.test(normalized)) {
+    return "staple";
+  }
+  if (/\b(bind|binding)\b/.test(normalized)) return "spiral";
+  return null;
 }
 
 async function recentOrderMessages(

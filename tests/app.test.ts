@@ -923,6 +923,194 @@ describe("Tobi app", () => {
     expect(await store.listOrders()).toHaveLength(0);
   });
 
+  it("retries Meta replies when the Graph API send fails", async () => {
+    const store = new MemoryTobiStore();
+    const app = createApp(store);
+    const metaEnv = {
+      ...env,
+      WHATSAPP_ACCESS_TOKEN: "test-meta-token",
+      WHATSAPP_PHONE_NUMBER_ID: "1052415724631354",
+      WHATSAPP_GRAPH_API_VERSION: "v25.0",
+    } as unknown as Env;
+    const graphRequests: MetaSendBody[] = [];
+    let attempt = 0;
+    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      attempt += 1;
+      graphRequests.push(JSON.parse(String(init?.body)) as MetaSendBody);
+      if (attempt === 1) {
+        return Response.json({ error: { message: "temporary failure" } }, { status: 500 });
+      }
+      return Response.json({ messages: [{ id: "wamid.OUTBOUND_RETRY" }] });
+    }) as typeof fetch;
+    const payload = metaTextPayload("919999999968", "wamid.RETRY", "hello");
+
+    const first = await app.request(
+      "/webhooks/whatsapp",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(payload),
+      },
+      metaEnv,
+    );
+    expect(first.status).toBe(500);
+    expect((await store.findMessageByProviderId("wamid.RETRY"))?.processingStatus).toBe("failed");
+
+    const second = await app.request(
+      "/webhooks/whatsapp",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(payload),
+      },
+      metaEnv,
+    );
+
+    expect(second.status).toBe(200);
+    expect(await second.json()).toMatchObject({ ok: true, duplicate: false });
+    expect(graphRequests).toHaveLength(2);
+    expect((await store.findMessageByProviderId("wamid.RETRY"))?.processingStatus).toBe("completed");
+  });
+
+  it("does not duplicate a PDF order when retrying after a Meta reply send failure", async () => {
+    const store = new MemoryTobiStore();
+    const app = createApp(store);
+    const metaEnv = {
+      ...env,
+      WHATSAPP_ACCESS_TOKEN: "test-meta-token",
+      WHATSAPP_PHONE_NUMBER_ID: "1052415724631354",
+      WHATSAPP_GRAPH_API_VERSION: "v25.0",
+    } as unknown as Env;
+    const graphRequests: MetaSendBody[] = [];
+    let sendAttempt = 0;
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes("graph.facebook.com") && url.endsWith("/messages")) {
+        sendAttempt += 1;
+        graphRequests.push(JSON.parse(String(init?.body)) as MetaSendBody);
+        if (sendAttempt === 1) {
+          return Response.json({ error: { message: "temporary failure" } }, { status: 500 });
+        }
+        return Response.json({ messages: [{ id: "wamid.OUTBOUND_RETRY_PDF" }] });
+      }
+      if (url.includes("graph.facebook.com")) {
+        return Response.json({ url: "https://lookaside.fbsbx.com/whatsapp-media/retry.pdf" });
+      }
+      return new Response(pdfWithPages(12), {
+        headers: { "content-type": "application/pdf" },
+      });
+    }) as typeof fetch;
+    const payload = metaDocumentPayload(
+      "919999999967",
+      "wamid.RETRY_PDF",
+      "retry.pdf",
+      "black and white double sided",
+    );
+
+    const first = await app.request(
+      "/webhooks/whatsapp",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(payload),
+      },
+      metaEnv,
+    );
+    expect(first.status).toBe(500);
+
+    const second = await app.request(
+      "/webhooks/whatsapp",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(payload),
+      },
+      metaEnv,
+    );
+
+    const orders = await store.listOrders();
+    expect(second.status).toBe(200);
+    expect(orders).toHaveLength(1);
+    expect(orders[0].files).toHaveLength(1);
+    expect(graphRequests).toHaveLength(2);
+    expect(graphRequests[1]?.text?.body).toContain("How many copies should I print?");
+    expect((await store.findMessageByProviderId("wamid.RETRY_PDF"))?.processingStatus).toBe("completed");
+  });
+
+  it("uses Meta document captions as print instructions", async () => {
+    const store = new MemoryTobiStore();
+    const app = createApp(store);
+    const metaEnv = {
+      ...env,
+      WHATSAPP_ACCESS_TOKEN: "test-meta-token",
+      WHATSAPP_PHONE_NUMBER_ID: "1052415724631354",
+      WHATSAPP_GRAPH_API_VERSION: "v25.0",
+    } as unknown as Env;
+    const graphRequests: Array<{ url: string; body: MetaSendBody }> = [];
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes("graph.facebook.com") && url.endsWith("/messages")) {
+        graphRequests.push({
+          url,
+          body: JSON.parse(String(init?.body)) as MetaSendBody,
+        });
+        return Response.json({ messages: [{ id: `wamid.OUTBOUND_${graphRequests.length}` }] });
+      }
+      if (url.includes("graph.facebook.com")) {
+        return Response.json({ url: "https://lookaside.fbsbx.com/whatsapp-media/tobi-test.pdf" });
+      }
+      return new Response(pdfWithPages(15), {
+        headers: { "content-type": "application/pdf" },
+      });
+    }) as typeof fetch;
+
+    const upload = await app.request(
+      "/webhooks/whatsapp",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(
+          metaDocumentPayload(
+            "919999999969",
+            "wamid.DOC_CAPTION",
+            "Tobi_test.pdf",
+            "I want the printout to be black and white, double-sided, with four pages per sheet, and no spiral binding.",
+          ),
+        ),
+      },
+      metaEnv,
+    );
+
+    expect(upload.status).toBe(200);
+    expect(graphRequests[0]?.body.text?.body).toContain("How many copies should I print?");
+    const [draftOrder] = await store.listOrders();
+    expect(draftOrder.printOptions).toMatchObject({
+      pageCount: 15,
+      colorMode: "black_and_white",
+      sideMode: "double_sided",
+      pagesPerSheet: 4,
+      bindingType: "staple",
+    });
+
+    const copies = await app.request(
+      "/webhooks/whatsapp",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(metaTextPayload("919999999969", "wamid.COPIES", "three")),
+      },
+      metaEnv,
+    );
+
+    expect(copies.status).toBe(200);
+    expect(graphRequests[1]?.body.type).toBe("interactive");
+    expect(graphRequests[1]?.body.interactive?.body.text).toContain("Please confirm your print order");
+    expect(graphRequests[1]?.body.interactive?.body.text).toContain("Color: black and white");
+    expect(graphRequests[1]?.body.interactive?.body.text).toContain("Layout: 4-up");
+    expect(graphRequests[1]?.body.interactive?.body.text).not.toContain("black and white or color");
+    expect((await store.getOrder(draftOrder.id))?.printOptions.copies).toBe(3);
+  });
+
   it("sends Meta quote confirmation as interactive buttons", async () => {
     const store = new MemoryTobiStore();
     const app = createApp(store);
@@ -1053,6 +1241,65 @@ describe("Tobi app", () => {
       to: "919999999972",
       type: "text",
     });
+    expect(graphRequests[0]?.body.text?.body).toContain(`Confirmed ${order.publicId}`);
+    expect(graphRequests[0]?.body.text?.body).toContain("Pay here:");
+  });
+
+  it("accepts Meta button payload confirm replies", async () => {
+    const store = new MemoryTobiStore();
+    const app = createApp(store);
+    const customer = await store.upsertCustomer({ whatsappNumber: "whatsapp:+919999999973" });
+    let order = await store.createOrder({ customerId: customer.id, shopId: "shop_demo" });
+    await store.addOrderFile({
+      orderId: order.id,
+      originalFilename: "notes.pdf",
+      mimeType: "application/pdf",
+      r2Key: "orders/notes.pdf",
+      pageCount: 10,
+      fileSizeBytes: 1000,
+    });
+    order = await store.updatePrintOptions(order.id, {
+      pageCount: 10,
+      copies: 1,
+      colorMode: "black_and_white",
+      sideMode: "single_sided",
+    });
+    order = await store.setQuote(order.id, {
+      pages: 10,
+      copies: 1,
+      pagesPerSheet: 1,
+      billableSheets: 10,
+      lineItems: [{ label: "Printing", amountPaise: 2000 }],
+      totalPaise: 2200,
+      currency: "INR",
+    });
+    const metaEnv = {
+      ...env,
+      WHATSAPP_ACCESS_TOKEN: "test-meta-token",
+      WHATSAPP_PHONE_NUMBER_ID: "1052415724631354",
+      WHATSAPP_GRAPH_API_VERSION: "v25.0",
+    } as unknown as Env;
+    const graphRequests: Array<{ url: string; body: MetaSendBody }> = [];
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      graphRequests.push({
+        url: String(input),
+        body: JSON.parse(String(init?.body)) as MetaSendBody,
+      });
+      return Response.json({ messages: [{ id: "wamid.OUTBOUND_PAYMENT" }] });
+    }) as typeof fetch;
+
+    const response = await app.request(
+      "/webhooks/whatsapp",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(metaButtonPayload("919999999973", "wamid.CONFIRM_BUTTON", "confirm_quote", "Confirm")),
+      },
+      metaEnv,
+    );
+
+    expect(response.status).toBe(200);
+    expect((await store.getOrder(order.id))?.status).toBe("PAYMENT_LINK_SENT");
     expect(graphRequests[0]?.body.text?.body).toContain(`Confirmed ${order.publicId}`);
     expect(graphRequests[0]?.body.text?.body).toContain("Pay here:");
   });
@@ -1270,6 +1517,77 @@ function metaButtonReplyPayload(
                   interactive: {
                     type: "button_reply",
                     button_reply: { id: buttonId, title },
+                  },
+                },
+              ],
+            },
+          },
+        ],
+      },
+    ],
+  };
+}
+
+function metaButtonPayload(
+  from: string,
+  id: string,
+  payload: string,
+  text: string,
+): Record<string, unknown> {
+  return {
+    object: "whatsapp_business_account",
+    entry: [
+      {
+        changes: [
+          {
+            field: "messages",
+            value: {
+              messaging_product: "whatsapp",
+              contacts: [{ wa_id: from, profile: { name: "Meta Tester" } }],
+              messages: [
+                {
+                  from,
+                  id,
+                  timestamp: "1710000000",
+                  type: "button",
+                  button: { payload, text },
+                },
+              ],
+            },
+          },
+        ],
+      },
+    ],
+  };
+}
+
+function metaDocumentPayload(
+  from: string,
+  id: string,
+  filename: string,
+  caption: string,
+): Record<string, unknown> {
+  return {
+    object: "whatsapp_business_account",
+    entry: [
+      {
+        changes: [
+          {
+            field: "messages",
+            value: {
+              messaging_product: "whatsapp",
+              contacts: [{ wa_id: from, profile: { name: "Meta Tester" } }],
+              messages: [
+                {
+                  from,
+                  id,
+                  timestamp: "1710000000",
+                  type: "document",
+                  document: {
+                    id: "MEDIA_DOC_CAPTION",
+                    filename,
+                    caption,
+                    mime_type: "application/pdf",
                   },
                 },
               ],

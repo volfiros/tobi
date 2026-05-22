@@ -13,7 +13,7 @@ export const demoPricingRules: PricingRule[] = [
 
 export const demoBindingPrices: BindingPrice[] = [
   { bindingType: "none", pricePaise: 0 },
-  { bindingType: "staple", pricePaise: 200 },
+  { bindingType: "staple", pricePaise: 0 },
   { bindingType: "spiral", pricePaise: 3000 },
   { bindingType: "soft_bind", pricePaise: 6000 },
   { bindingType: "hard_bind", pricePaise: 12000 }

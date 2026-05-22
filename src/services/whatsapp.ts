@@ -150,6 +150,10 @@ function textFromMetaMessage(message: MetaMessage): string {
   if (buttonReply?.id === "confirm_quote") return "Confirm";
   if (buttonReply?.id === "cancel_order") return "Cancel";
   if (buttonReply?.title) return buttonReply.title;
+  if (message.button?.payload === "confirm_quote") return "Confirm";
+  if (message.button?.payload === "cancel_order") return "Cancel";
+  if (message.button?.text) return message.button.text;
+  if (message.document?.caption) return message.document.caption;
   if (message.document?.filename) return message.document.filename;
   if (message.image?.caption) return message.image.caption;
   return "";
@@ -203,8 +207,13 @@ type MetaMessage = {
       title?: string;
     };
   };
+  button?: {
+    payload?: string;
+    text?: string;
+  };
   document?: {
     id: string;
+    caption?: string;
     filename?: string;
     mime_type?: string;
   };

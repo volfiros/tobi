@@ -115,6 +115,118 @@ describe("message workflow", () => {
     expect(updated?.totalPaise).toBeGreaterThan(order.totalPaise);
   });
 
+  it("treats a generic binding edit as spiral before requoting", async () => {
+    const store = new MemoryTobiStore();
+    const customer = await store.upsertCustomer({ whatsappNumber: "whatsapp:+919900000008" });
+    let order = await store.createOrder({ customerId: customer.id, shopId: "shop_demo" });
+    await store.addOrderFile({
+      orderId: order.id,
+      originalFilename: "notes.pdf",
+      mimeType: "application/pdf",
+      r2Key: "orders/notes.pdf",
+      pageCount: 10,
+      fileSizeBytes: 1000,
+    });
+    order = await store.updatePrintOptions(order.id, {
+      copies: 1,
+      colorMode: "black_and_white",
+      sideMode: "double_sided",
+      pagesPerSheet: 2,
+    });
+    order = await store.setQuote(order.id, {
+      pages: 10,
+      copies: 1,
+      pagesPerSheet: 2,
+      billableSheets: 5,
+      lineItems: [{ label: "Printing", amountPaise: 1000 }],
+      totalPaise: 1200,
+      currency: "INR",
+    });
+    const inboundMessage = await createInboundMessage(store, customer.id, "I want binding as well.");
+
+    const result = await handleInboundWorkflow({
+      store,
+      env,
+      customer,
+      activeOrder: order,
+      inboundMessage,
+      inbound: inbound("I want binding as well."),
+      understandingProvider: provider({
+        intent: "update_order_details",
+        confidence: 0.92,
+        slots: {
+          bindingType: "none",
+          specialInstructions: "I want binding as well.",
+        },
+        ambiguity: null,
+        customerReplyDraft: null,
+      }),
+    });
+
+    const updated = await store.getOrder(order.id);
+    expect(result.reply).toContain("Please confirm your print order");
+    expect(result.reply).toContain("Binding: spiral");
+    expect(result.actions).toEqual([
+      { id: "confirm_quote", title: "Confirm" },
+      { id: "cancel_order", title: "Cancel" },
+    ]);
+    expect(updated?.status).toBe("QUOTE_READY");
+    expect(updated?.printOptions.bindingType).toBe("spiral");
+    expect(updated?.totalPaise).toBeGreaterThan(order.totalPaise);
+  });
+
+  it("confirms quote-ready order before applying repeated quote slots", async () => {
+    const store = new MemoryTobiStore();
+    const customer = await store.upsertCustomer({ whatsappNumber: "whatsapp:+919900000004" });
+    let order = await store.createOrder({ customerId: customer.id, shopId: "shop_demo" });
+    await store.addOrderFile({
+      orderId: order.id,
+      originalFilename: "notes.pdf",
+      mimeType: "application/pdf",
+      r2Key: "orders/notes.pdf",
+      pageCount: 10,
+      fileSizeBytes: 1000,
+    });
+    order = await store.updatePrintOptions(order.id, {
+      copies: 1,
+      colorMode: "black_and_white",
+      sideMode: "single_sided",
+    });
+    order = await store.setQuote(order.id, {
+      pages: 10,
+      copies: 1,
+      pagesPerSheet: 1,
+      billableSheets: 10,
+      lineItems: [{ label: "Printing", amountPaise: 2000 }],
+      totalPaise: 2200,
+      currency: "INR",
+    });
+    const inboundMessage = await createInboundMessage(store, customer.id, "Confirm");
+
+    const result = await handleInboundWorkflow({
+      store,
+      env,
+      customer,
+      activeOrder: order,
+      inboundMessage,
+      inbound: inbound("Confirm"),
+      understandingProvider: provider({
+        intent: "confirm_quote",
+        confidence: 0.95,
+        slots: { copies: 2 },
+        ambiguity: null,
+        customerReplyDraft: null,
+      }),
+    });
+
+    const updated = await store.getOrder(order.id);
+    expect(result.reply).toContain(`Confirmed ${order.publicId}`);
+    expect(result.reply).toContain("Pay here:");
+    expect(result.actions).toBeUndefined();
+    expect(updated?.status).toBe("PAYMENT_LINK_SENT");
+    expect(updated?.printOptions.copies).toBe(1);
+  });
+
   it("blocks edits after payment link is sent", async () => {
     const store = new MemoryTobiStore();
     const customer = await store.upsertCustomer({ whatsappNumber: "whatsapp:+919900000003" });

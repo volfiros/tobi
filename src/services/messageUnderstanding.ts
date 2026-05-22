@@ -247,6 +247,15 @@ export function understandWithRules(
       null,
     );
   }
+  if (input.activeOrderSummary && Object.keys(slots).length > 0) {
+    return parsedUnderstanding(
+      "update_order_details",
+      extraction.confidence,
+      slots,
+      null,
+      null,
+    );
+  }
   if (/^(hi|hello|hey|namaste|yo)\b[!. ]*$/.test(normalized)) {
     return parsedUnderstanding(
       "general_chat",

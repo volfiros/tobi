@@ -16,17 +16,19 @@ export function extractWithRules(body: string, hasFile = false): PrintOrderExtra
     : /\b(single|one[- ]side|1[- ]side|single[- ]sided|one[- ]sided)\b/.test(normalized)
       ? "single_sided"
       : null;
-  const bindingType = /\bspiral\b/.test(normalized)
-    ? "spiral"
-    : /\bstaple\b/.test(normalized)
-      ? "staple"
-      : /\bsoft\b/.test(normalized)
-        ? "soft_bind"
-        : /\bhard\b/.test(normalized)
-          ? "hard_bind"
-          : /\bno binding|none\b/.test(normalized)
-            ? "none"
-            : null;
+  const bindingType = /\b(no|without)\s+(?:spiral|binding|bind)\b|\bno binding\b|\bnone\b/.test(normalized)
+    ? "staple"
+    : /\bspiral\b/.test(normalized)
+      ? "spiral"
+      : /\bstaple\b/.test(normalized)
+        ? "staple"
+        : /\bsoft\b/.test(normalized)
+          ? "soft_bind"
+          : /\bhard\b/.test(normalized)
+            ? "hard_bind"
+            : /\b(bind|binding)\b/.test(normalized)
+              ? "spiral"
+              : null;
 
   const intent = classifyIntent(normalized, hasFile);
   const pickupTime = timeMatch ? normalizeTime(timeMatch[1], timeMatch[2], timeMatch[3]) : null;
@@ -74,7 +76,12 @@ function extractCopies(normalized: string): number | null {
     ten: 10,
   };
   const wordMatch = normalized.match(/\b(one|single|two|three|four|five|six|seven|eight|nine|ten)\s*(copy|copies|sets?)\b/);
-  return wordMatch ? words[wordMatch[1]] : null;
+  if (wordMatch) return words[wordMatch[1]];
+
+  const conciseAnswer = normalized.trim().match(/^(\d+|one|two|three|four|five|six|seven|eight|nine|ten)$/);
+  if (!conciseAnswer) return null;
+  const value = conciseAnswer[1];
+  return /^\d+$/.test(value) ? Number(value) : words[value];
 }
 
 function extractPagesPerSheet(normalized: string, hasFile: boolean): 1 | 2 | 4 | 6 | 8 | null {

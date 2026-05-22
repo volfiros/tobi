@@ -227,35 +227,46 @@ async function handleMetaWhatsAppWebhook(context: AppContext): Promise<Response>
     context,
     inbound,
     "meta_cloud_api",
+    { completeInboundMessage: false },
   );
   if (!result.duplicate) {
-    const providerMessageId = result.actions?.length
-      ? await sendMetaWhatsAppInteractiveButtons(
-          context.env,
-          inbound.from,
-          result.reply,
-          result.actions,
-        )
-      : await sendMetaWhatsAppText(
-          context.env,
-          inbound.from,
-          result.reply,
-        );
-    await context.get("store").createMessage({
-      customerId: result.customerId,
-      orderId: result.orderId,
-      direction: "outbound",
-      provider: "meta_cloud_api",
-      processingStatus: "completed",
-      providerMessageId,
-      body: result.reply,
-      mediaCount: 0,
-      rawPayloadJson: JSON.stringify({
-        flow: "message_workflow",
-        audit: result.audit,
-        actions: result.actions ?? [],
-      }),
-    });
+    try {
+      const providerMessageId = result.actions?.length
+        ? await sendMetaWhatsAppInteractiveButtons(
+            context.env,
+            inbound.from,
+            result.reply,
+            result.actions,
+          )
+        : await sendMetaWhatsAppText(
+            context.env,
+            inbound.from,
+            result.reply,
+          );
+      await context.get("store").createMessage({
+        customerId: result.customerId,
+        orderId: result.orderId,
+        direction: "outbound",
+        provider: "meta_cloud_api",
+        processingStatus: "completed",
+        providerMessageId,
+        body: result.reply,
+        mediaCount: 0,
+        rawPayloadJson: JSON.stringify({
+          flow: "message_workflow",
+          audit: result.audit,
+          actions: result.actions ?? [],
+        }),
+      });
+      await context
+        .get("store")
+        .markMessageProcessed(result.inboundMessageId, "completed");
+    } catch (error) {
+      await context
+        .get("store")
+        .markMessageProcessed(result.inboundMessageId, "failed");
+      throw error;
+    }
   }
   return context.json({ ok: true, duplicate: result.duplicate });
 }
@@ -264,6 +275,7 @@ async function processInboundWhatsAppMessage(
   context: AppContext,
   inbound: Awaited<ReturnType<typeof parseInboundWhatsApp>>,
   provider: WhatsAppProvider,
+  options: { completeInboundMessage?: boolean } = {},
 ): Promise<{
   customerId: string;
   orderId: string | null;
@@ -271,6 +283,7 @@ async function processInboundWhatsAppMessage(
   actions?: Awaited<ReturnType<typeof handleInboundWorkflow>>["actions"];
   audit: Record<string, unknown>;
   duplicate: boolean;
+  inboundMessageId: string;
 }> {
   const store = context.get("store");
   const inboundMessage = await store.tryCreateMessage({
@@ -295,10 +308,14 @@ async function processInboundWhatsAppMessage(
       reply: "Already received this message.",
       audit: { duplicate: true, provider },
       duplicate: true,
+      inboundMessageId: inboundMessage.message.id,
     };
   }
 
-  const activeOrder = await store.findActiveOrder(customer.id);
+  const boundOrder = inboundMessage.message.orderId
+    ? await store.getOrder(inboundMessage.message.orderId)
+    : null;
+  const activeOrder = boundOrder ?? (await store.findActiveOrder(customer.id));
   let result;
   try {
     result = await handleInboundWorkflow({
@@ -308,6 +325,9 @@ async function processInboundWhatsAppMessage(
       inboundMessage: inboundMessage.message,
       inbound,
       activeOrder,
+      boundOrder,
+      skipMediaStorage:
+        inboundMessage.message.processingStatus === "failed" && !!boundOrder,
     });
   } catch (error) {
     await store.markMessageProcessed(inboundMessage.message.id, "failed");
@@ -340,7 +360,9 @@ async function processInboundWhatsAppMessage(
       }),
     });
   }
-  await store.markMessageProcessed(inboundMessage.message.id, "completed");
+  if (options.completeInboundMessage ?? true) {
+    await store.markMessageProcessed(inboundMessage.message.id, "completed");
+  }
   return {
     customerId: customer.id,
     orderId: result.orderId,
@@ -348,6 +370,7 @@ async function processInboundWhatsAppMessage(
     actions: result.actions,
     audit: result.audit,
     duplicate: false,
+    inboundMessageId: inboundMessage.message.id,
   };
 }
 

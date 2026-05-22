@@ -273,7 +273,9 @@ Important rules:
 - PDF page count is authoritative.
 - N-up layout changes billable sheets, not the original PDF page count.
 - Double-sided printing reduces billable sheets after layout is applied.
-- Binding is charged per copy.
+- Staple binding is the free default when the customer does not mention binding.
+- Generic binding requests, such as "I want binding", are treated as spiral binding.
+- Spiral binding is charged per copy.
 - A small demo platform fee is added.
 
 Example: a 5-page PDF, 2 copies, black and white, double-sided, spiral binding:
