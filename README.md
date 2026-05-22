@@ -4,11 +4,11 @@
 
 Tobi is a WhatsApp-first print-ordering demo for Indian print shops. Customers send a PDF and print instructions in WhatsApp, Tobi uses a hybrid AI understanding layer to interpret the message, asks for missing details, prepares a deterministic quote, sends a Razorpay Test Mode payment link, and updates a shop dashboard when payment is confirmed.
 
-The app is built as a Hono app on Cloudflare Workers with Cloudflare D1, R2, KV, Meta WhatsApp Cloud API (MetaCloud) webhooks, Gemini message understanding, and Razorpay Test Mode webhooks. Twilio sandbox parsing remains only as a legacy fallback for form-encoded smoke tests.
+The app is built as a Hono app on Cloudflare Workers with Cloudflare D1, R2, KV, WhatsApp Cloud API webhooks, Gemini message understanding, and Razorpay Test Mode webhooks. Twilio sandbox parsing remains only as a legacy fallback for form-encoded smoke tests.
 
 ## Product Flow
 
-1. A customer messages the Meta WhatsApp Cloud API business number.
+1. A customer messages the WhatsApp Cloud API business number.
 2. Tobi receives the inbound webhook at `/webhooks/whatsapp`.
 3. PDF files are stored in R2 and the PDF page count is treated as authoritative.
 4. Gemini returns structured message understanding: intent, confidence, normalized print slots, ambiguity, and optional general-chat reply.
@@ -64,7 +64,7 @@ Login is protected by `ADMIN_PIN` and an HTTP-only dashboard session cookie.
 ## Architecture
 
 ```text
-Meta WhatsApp Cloud API (MetaCloud)
+WhatsApp Cloud API
   -> WhatsApp webhook
   -> Hono Worker
   -> Gemini message understanding
@@ -128,7 +128,7 @@ http://localhost:8787/dashboard/login
 
 ## Environment Variables
 
-Required for the complete Meta WhatsApp Cloud API, Gemini, Razorpay, and dashboard workflow:
+Required for the complete WhatsApp Cloud API, Gemini, Razorpay, and dashboard workflow:
 
 ```text
 APP_ENV
@@ -159,11 +159,11 @@ TWILIO_AUTH_TOKEN
 TWILIO_WHATSAPP_FROM
 ```
 
-For local testing without external services, some tests use mocks and fixtures. For real WhatsApp and payment testing, Meta WhatsApp Cloud API, Razorpay, and Gemini values are needed. Twilio values are optional and only support the legacy sandbox/form-encoded path.
+For local testing without external services, some tests use mocks and fixtures. For real WhatsApp and payment testing, WhatsApp Cloud API, Razorpay, and Gemini values are needed. Twilio values are optional and only support the legacy sandbox/form-encoded path.
 
 ## Manual Service Setup
 
-### Meta WhatsApp Cloud API (MetaCloud)
+### WhatsApp Cloud API
 
 Set the WhatsApp callback URL to:
 
@@ -177,7 +177,7 @@ Use this verify token:
 WHATSAPP_VERIFY_TOKEN
 ```
 
-Subscribe the webhook to WhatsApp message events. Inbound JSON webhooks are handled as Meta WhatsApp Cloud API messages, and outbound replies are sent through the Graph API using:
+Subscribe the webhook to WhatsApp message events. Inbound JSON webhooks are handled as WhatsApp Cloud API messages, and outbound replies are sent through the Graph API using:
 
 ```text
 WHATSAPP_ACCESS_TOKEN
@@ -315,7 +315,7 @@ The tests cover:
 - N-up layout extraction.
 - Quote calculation.
 - Duplicate inbound message handling.
-- Meta WhatsApp Cloud API webhook handling and outbound Graph API replies.
+- WhatsApp Cloud API webhook handling and outbound Graph API replies.
 - Legacy Twilio signature verification.
 - Razorpay webhook idempotency.
 - Dashboard rendering.
@@ -334,7 +334,7 @@ Recommended next improvements based on the current customer and shop flows:
 
 - This is a demo, not a production payment or fulfillment system.
 - Payments use Razorpay Test Mode.
-- WhatsApp is currently integrated through the Meta WhatsApp Cloud API. Twilio sandbox support is retained only as a fallback test path.
+- WhatsApp is currently integrated through the WhatsApp Cloud API. Twilio sandbox support is retained only as a fallback test path.
 - The dashboard is PIN-protected, not a full multi-user auth system.
 - V1 is optimized for one demo shop and pickup-only orders.
 - Human review is still recommended before printing real customer documents.

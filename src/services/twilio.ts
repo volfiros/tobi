@@ -1,4 +1,4 @@
-// Twilio sandbox is no longer used for WhatsApp chatbot traffic; the app has migrated to the MetaCloud API.
+// Twilio sandbox is no longer used for WhatsApp chatbot traffic; the app has migrated to the WhatsApp Cloud API.
 import type { InboundWhatsAppMessage } from "../domain";
 
 export async function verifyTwilioSignature(request: Request, authToken: string, publicAppUrl?: string): Promise<boolean> {

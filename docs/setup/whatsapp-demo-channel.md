@@ -1,9 +1,9 @@
 # WhatsApp Demo Channel Setup
 
-The demo does not require WhatsApp native payments. Use the Meta WhatsApp Cloud API (MetaCloud)
+The demo does not require WhatsApp native payments. Use the WhatsApp Cloud API
 for chat delivery, then keep Razorpay Test Mode for payment confirmation.
 
-## Meta WhatsApp Cloud API (MetaCloud)
+## WhatsApp Cloud API
 
 1. In Meta Developer settings, set the callback URL to:
 
@@ -41,6 +41,6 @@ https://<your-public-host>/webhooks/whatsapp
 
 Use `POST` as the webhook method.
 
-For local smoke testing without Meta WhatsApp Cloud API or Twilio, post form data directly to
+For local smoke testing without WhatsApp Cloud API or Twilio, post form data directly to
 `/webhooks/whatsapp` with fields such as `From`, `Body`, `NumMedia`,
 `MediaUrl0`, `MediaContentType0`, and `pageCount`.

@@ -5,8 +5,8 @@ import {
 } from "../src/services/messageUnderstanding";
 
 describe("message understanding", () => {
-  it("uses Gemini 3.1 Flash Lite as the default model", () => {
-    expect(DEFAULT_GEMINI_MODEL).toBe("gemini-3.1-flash-lite");
+  it("uses Gemini 2.5 Flash Lite as the default model", () => {
+    expect(DEFAULT_GEMINI_MODEL).toBe("gemini-2.5-flash-lite");
   });
 
   it("understands copy-count updates against an active order", async () => {
