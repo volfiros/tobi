@@ -8,9 +8,9 @@ The app is built as a Hono app on Cloudflare Workers with Cloudflare D1, R2, KV,
 
 ## Demo Video
 
-[Watch the interactive demo video](https://volfiros.github.io/tobi/demo/)
+https://github.com/user-attachments/assets/06b11db9-f4dc-41f5-aea3-562f63291ea4
 
-GitHub's README renderer may not play repository video files inline. The demo page uses a standard HTML5 video player and includes a direct MP4 fallback.
+[Open the demo page](https://volfiros.github.io/tobi/demo/)
 
 ## Product Flow
 
