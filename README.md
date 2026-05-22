@@ -8,9 +8,9 @@ The app is built as a Hono app on Cloudflare Workers with Cloudflare D1, R2, KV,
 
 ## Demo Video
 
-<video src="./assets/tobi-demo.mp4" controls width="780" title="Tobi WhatsApp print-ordering demo"></video>
+[Watch the interactive demo video](https://volfiros.github.io/tobi/demo/)
 
-[Watch the demo video](./assets/tobi-demo.mp4)
+GitHub's README renderer may not play repository video files inline. The demo page uses a standard HTML5 video player and includes a direct MP4 fallback.
 
 ## Product Flow
 
