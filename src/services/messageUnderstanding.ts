@@ -131,21 +131,52 @@ export class FallbackMessageUnderstandingProvider implements MessageUnderstandin
   }
 }
 
+export class RuleFirstMessageUnderstandingProvider implements MessageUnderstandingProvider {
+  constructor(
+    private readonly fastProvider: MessageUnderstandingProvider,
+    private readonly aiProvider: MessageUnderstandingProvider,
+  ) {}
+
+  async understandMessage(
+    input: UnderstandMessageInput,
+  ): Promise<MessageUnderstanding> {
+    const fastUnderstanding = await this.fastProvider.understandMessage(input);
+    if (!shouldEscalateToAi(fastUnderstanding)) {
+      return fastUnderstanding;
+    }
+
+    try {
+      return await this.aiProvider.understandMessage(input);
+    } catch {
+      return fastUnderstanding;
+    }
+  }
+}
+
 export function createMessageUnderstandingProvider(
-  env: Pick<Env, "GEMINI_API_KEY" | "GEMINI_DEFAULT_MODEL">,
+  env: Pick<
+    Env,
+    "GEMINI_API_KEY" | "GEMINI_DEFAULT_MODEL" | "MESSAGE_UNDERSTANDING_MODE"
+  >,
 ): MessageUnderstandingProvider {
   const fallback = new RuleMessageUnderstandingProvider();
-  if (!env.GEMINI_API_KEY) return fallback;
-  return new FallbackMessageUnderstandingProvider(
-    new GeminiMessageUnderstandingProvider(
-      env.GEMINI_API_KEY,
-      env.GEMINI_DEFAULT_MODEL || DEFAULT_GEMINI_MODEL,
-    ),
-    fallback,
+  if (!env.GEMINI_API_KEY || env.MESSAGE_UNDERSTANDING_MODE === "rules_only") {
+    return fallback;
+  }
+
+  const gemini = new GeminiMessageUnderstandingProvider(
+    env.GEMINI_API_KEY,
+    env.GEMINI_DEFAULT_MODEL || DEFAULT_GEMINI_MODEL,
   );
+  if (env.MESSAGE_UNDERSTANDING_MODE === "ai_first") {
+    return new FallbackMessageUnderstandingProvider(gemini, fallback);
+  }
+
+  return new RuleFirstMessageUnderstandingProvider(fallback, gemini);
 }
 
 export const DEFAULT_GEMINI_MODEL = "gemini-2.5-flash-lite";
+const AI_ESCALATION_CONFIDENCE_THRESHOLD = 0.7;
 
 export function understandWithRules(
   input: UnderstandMessageInput,
@@ -337,6 +368,13 @@ function parsedUnderstanding(
     ambiguity,
     customerReplyDraft,
   });
+}
+
+function shouldEscalateToAi(understanding: MessageUnderstanding): boolean {
+  return (
+    understanding.intent === "unclear" ||
+    understanding.confidence < AI_ESCALATION_CONFIDENCE_THRESHOLD
+  );
 }
 
 function compactSlots(slots: Record<string, unknown>): Record<string, unknown> {

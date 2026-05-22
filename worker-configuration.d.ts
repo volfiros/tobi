@@ -8,6 +8,7 @@ interface Env {
   ADMIN_SESSION_TOKEN?: string;
   GEMINI_API_KEY?: string;
   GEMINI_DEFAULT_MODEL?: string;
+  MESSAGE_UNDERSTANDING_MODE?: "rules_first" | "rules_only" | "ai_first";
   RAZORPAY_KEY_ID?: string;
   RAZORPAY_KEY_SECRET?: string;
   RAZORPAY_WEBHOOK_SECRET?: string;
