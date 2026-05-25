@@ -3,6 +3,7 @@ import type {
   InboundWhatsAppMessage,
   Message,
   Order,
+  PrintOptions,
 } from "../domain";
 import { calculateQuote, formatPaise } from "./pricing";
 import {
@@ -161,6 +162,13 @@ export async function handleInboundWorkflow(input: {
       order.printOptions.pageCount ??
       validation.accepted.pageCount,
   });
+
+  if (order.files.length > 0) {
+    const defaults = defaultPrintOptionsForUploadedFile(order.printOptions);
+    if (Object.keys(defaults).length > 0) {
+      order = await input.store.updatePrintOptions(order.id, defaults);
+    }
+  }
 
   const missing = nextMissingField({
     hasFile: order.files.length > 0,
@@ -619,6 +627,19 @@ function paymentStartedOrderReply(order: Order): string {
 
 function authoritativePdfPageCount(order: Order): number | null {
   return order.files.find((file) => file.pageCount !== null)?.pageCount ?? null;
+}
+
+function defaultPrintOptionsForUploadedFile(
+  options: PrintOptions,
+): Partial<PrintOptions> {
+  return {
+    ...(options.copies ? {} : { copies: 1 }),
+    ...(options.colorMode ? {} : { colorMode: "black_and_white" }),
+    ...(options.sideMode ? {} : { sideMode: "single_sided" }),
+    ...(options.paperSize ? {} : { paperSize: "A4" }),
+    ...(options.bindingType ? {} : { bindingType: "staple" }),
+    ...(options.pagesPerSheet ? {} : { pagesPerSheet: 1 }),
+  };
 }
 
 function quoteConfirmationActions(): WorkflowAction[] {

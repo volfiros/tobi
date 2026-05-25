@@ -318,7 +318,7 @@ describe("Tobi app", () => {
     expect(order.quoteSnapshot?.billableSheets).toBe(213);
   });
 
-  it("quickly asks for missing details after a filename-only PDF upload", async () => {
+  it("quickly creates a default quote after a filename-only PDF upload", async () => {
     const store = new MemoryTobiStore();
     const app = createApp(store);
     const body = new URLSearchParams({
@@ -339,11 +339,26 @@ describe("Tobi app", () => {
 
     expect(response.status).toBe(200);
     const text = await response.text();
-    expect(text).toContain("How many copies");
+    expect(text).toContain("Please confirm your print order TOBI-");
+    expect(text).toContain("Pages: 71");
+    expect(text).toContain("Copies: 1");
+    expect(text).toContain("Color: black and white");
+    expect(text).toContain("Sides: single sided");
+    expect(text).toContain("Layout: 1-up");
+    expect(text).toContain("Paper: A4");
+    expect(text).toContain("Binding: staple");
 
     const [order] = await store.listOrders();
-    expect(order.status).toBe("AWAITING_DETAILS");
-    expect(order.printOptions.pageCount).toBe(71);
+    expect(order.status).toBe("QUOTE_READY");
+    expect(order.printOptions).toMatchObject({
+      pageCount: 71,
+      copies: 1,
+      colorMode: "black_and_white",
+      sideMode: "single_sided",
+      pagesPerSheet: 1,
+      paperSize: "A4",
+      bindingType: "staple"
+    });
 
     const messages = await store.listInboundMessagesForOrder(order.id);
     expect(messages).toHaveLength(1);
@@ -442,29 +457,15 @@ describe("Tobi app", () => {
     );
 
     const text = await response.text();
-    expect(text).toContain("Should I print this single-sided or double-sided?");
+    expect(text).toContain("Please confirm your print order TOBI-");
     expect(text).not.toContain("How many copies");
+    expect(text).not.toContain("single-sided or double-sided");
 
     const [order] = await store.listOrders();
     expect(order.printOptions.copies).toBe(2);
+    expect(order.printOptions.sideMode).toBe("single_sided");
     expect(order.printOptions.pagesPerSheet).toBe(4);
     expect(order.printOptions.pageCount).toBe(284);
-
-    const sides = new URLSearchParams({
-      From: "whatsapp:+919999999996",
-      MessageSid: "SM_WORD_COPIES_SIDES",
-      Body: "single-sided",
-      NumMedia: "0"
-    });
-    const quote = await app.request(
-      "/webhooks/whatsapp",
-      { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body: sides },
-      env
-    );
-    const quoteText = await quote.text();
-    expect(quoteText).toContain("Pages: 284");
-    expect(quoteText).toContain("Copies: 2");
-    expect(quoteText).toContain("Layout: 4-up");
   });
 
   it("uses print specs from the PDF caption without asking duplicate questions", async () => {
@@ -531,7 +532,10 @@ describe("Tobi app", () => {
     const text = await response.text();
     const [order] = await store.listOrders();
     expect(order.printOptions.copies).toBe(2);
-    expect(text).toContain("black and white or color");
+    expect(text).toContain("Please confirm your print order");
+    expect(text).toContain("Copies: 2");
+    expect(text).toContain("Color: black and white");
+    expect(text).toContain("Sides: single sided");
   });
 
   it("updates side mode from an indirect same-file follow-up without creating another order", async () => {
@@ -1033,7 +1037,11 @@ describe("Tobi app", () => {
     expect(orders).toHaveLength(1);
     expect(orders[0].files).toHaveLength(1);
     expect(graphRequests).toHaveLength(2);
-    expect(graphRequests[1]?.text?.body).toContain("How many copies should I print?");
+    expect(graphRequests[1]?.type).toBe("interactive");
+    expect(graphRequests[1]?.interactive?.body.text).toContain("Please confirm your print order");
+    expect(graphRequests[1]?.interactive?.body.text).toContain("Copies: 1");
+    expect(graphRequests[1]?.interactive?.body.text).toContain("Color: black and white");
+    expect(graphRequests[1]?.interactive?.body.text).toContain("Sides: double sided");
     expect((await store.findMessageByProviderId("wamid.RETRY_PDF"))?.processingStatus).toBe("completed");
   });
 
@@ -1082,10 +1090,13 @@ describe("Tobi app", () => {
     );
 
     expect(upload.status).toBe(200);
-    expect(graphRequests[0]?.body.text?.body).toContain("How many copies should I print?");
+    expect(graphRequests[0]?.body.type).toBe("interactive");
+    expect(graphRequests[0]?.body.interactive?.body.text).toContain("Please confirm your print order");
+    expect(graphRequests[0]?.body.interactive?.body.text).toContain("Copies: 1");
     const [draftOrder] = await store.listOrders();
     expect(draftOrder.printOptions).toMatchObject({
       pageCount: 15,
+      copies: 1,
       colorMode: "black_and_white",
       sideMode: "double_sided",
       pagesPerSheet: 4,
@@ -1105,6 +1116,7 @@ describe("Tobi app", () => {
     expect(copies.status).toBe(200);
     expect(graphRequests[1]?.body.type).toBe("interactive");
     expect(graphRequests[1]?.body.interactive?.body.text).toContain("Please confirm your print order");
+    expect(graphRequests[1]?.body.interactive?.body.text).toContain("Copies: 3");
     expect(graphRequests[1]?.body.interactive?.body.text).toContain("Color: black and white");
     expect(graphRequests[1]?.body.interactive?.body.text).toContain("Layout: 4-up");
     expect(graphRequests[1]?.body.interactive?.body.text).not.toContain("black and white or color");
