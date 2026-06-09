@@ -21,9 +21,10 @@ const printOptionSlotSchema = z.object({
   copies: z.number().int().positive().nullable().optional(),
   colorMode: z.enum(["black_and_white", "color"]).nullable().optional(),
   sideMode: z.enum(["single_sided", "double_sided"]).nullable().optional(),
-  paperSize: z.enum(["A4", "A3", "letter", "legal"]).optional(),
+  paperSize: z.enum(["A4", "A3", "letter", "legal"]).nullable().optional(),
   bindingType: z
     .enum(["none", "staple", "spiral", "soft_bind", "hard_bind"])
+    .nullable()
     .optional(),
   pagesPerSheet: z
     .union([
@@ -33,8 +34,9 @@ const printOptionSlotSchema = z.object({
       z.literal(6),
       z.literal(8),
     ])
+    .nullable()
     .optional(),
-  fulfillmentType: z.literal("pickup").optional(),
+  fulfillmentType: z.literal("pickup").nullable().optional(),
   pickupTime: z.string().nullable().optional(),
   pageCount: z.number().int().positive().nullable().optional(),
   specialInstructions: z.string().nullable().optional(),
@@ -107,10 +109,53 @@ export class GeminiMessageUnderstandingProvider implements MessageUnderstandingP
       ],
       config: {
         responseMimeType: "application/json",
+        temperature: 0,
+        maxOutputTokens: 512,
       },
     });
 
-    return messageUnderstandingSchema.parse(JSON.parse(response.text ?? "{}"));
+    const understanding = messageUnderstandingSchema.parse(
+      JSON.parse(response.text ?? "{}"),
+    );
+    logMessageUnderstandingSuccess(this.model, understanding);
+    return understanding;
+  }
+}
+
+export class CachedMessageUnderstandingProvider implements MessageUnderstandingProvider {
+  constructor(
+    private readonly provider: MessageUnderstandingProvider,
+    private readonly cache: KVNamespace,
+    private readonly expirationTtl = AI_UNDERSTANDING_CACHE_TTL_SECONDS,
+  ) {}
+
+  async understandMessage(
+    input: UnderstandMessageInput,
+  ): Promise<MessageUnderstanding> {
+    const key = await aiUnderstandingCacheKey(input);
+    try {
+      const cached = await this.cache.get(key, "json");
+      const parsedCached = messageUnderstandingSchema.safeParse(cached);
+      if (parsedCached.success) {
+        console.log("message_understanding_ai_cache_hit", {
+          intent: parsedCached.data.intent,
+          confidence: parsedCached.data.confidence,
+        });
+        return parsedCached.data;
+      }
+    } catch (error) {
+      logAiCacheError("read", error);
+    }
+
+    const understanding = await this.provider.understandMessage(input);
+    try {
+      await this.cache.put(key, JSON.stringify(understanding), {
+        expirationTtl: this.expirationTtl,
+      });
+    } catch (error) {
+      logAiCacheError("write", error);
+    }
+    return understanding;
   }
 }
 
@@ -125,7 +170,8 @@ export class FallbackMessageUnderstandingProvider implements MessageUnderstandin
   ): Promise<MessageUnderstanding> {
     try {
       return await this.primary.understandMessage(input);
-    } catch {
+    } catch (error) {
+      logMessageUnderstandingError("ai_first", error);
       return this.fallback.understandMessage(input);
     }
   }
@@ -147,7 +193,8 @@ export class RuleFirstMessageUnderstandingProvider implements MessageUnderstandi
 
     try {
       return await this.aiProvider.understandMessage(input);
-    } catch {
+    } catch (error) {
+      logMessageUnderstandingError("rules_first", error);
       return fastUnderstanding;
     }
   }
@@ -156,7 +203,10 @@ export class RuleFirstMessageUnderstandingProvider implements MessageUnderstandi
 export function createMessageUnderstandingProvider(
   env: Pick<
     Env,
-    "GEMINI_API_KEY" | "GEMINI_DEFAULT_MODEL" | "MESSAGE_UNDERSTANDING_MODE"
+    | "GEMINI_API_KEY"
+    | "GEMINI_DEFAULT_MODEL"
+    | "MESSAGE_UNDERSTANDING_MODE"
+    | "SESSIONS"
   >,
 ): MessageUnderstandingProvider {
   const fallback = new RuleMessageUnderstandingProvider();
@@ -164,10 +214,13 @@ export function createMessageUnderstandingProvider(
     return fallback;
   }
 
-  const gemini = new GeminiMessageUnderstandingProvider(
+  const geminiProvider = new GeminiMessageUnderstandingProvider(
     env.GEMINI_API_KEY,
     env.GEMINI_DEFAULT_MODEL || DEFAULT_GEMINI_MODEL,
   );
+  const gemini = env.SESSIONS
+    ? new CachedMessageUnderstandingProvider(geminiProvider, env.SESSIONS)
+    : geminiProvider;
   if (env.MESSAGE_UNDERSTANDING_MODE === "ai_first") {
     return new FallbackMessageUnderstandingProvider(gemini, fallback);
   }
@@ -176,7 +229,8 @@ export function createMessageUnderstandingProvider(
 }
 
 export const DEFAULT_GEMINI_MODEL = "gemini-2.5-flash-lite";
-const AI_ESCALATION_CONFIDENCE_THRESHOLD = 0.7;
+export const AI_ESCALATION_CONFIDENCE_THRESHOLD = 0.8;
+export const AI_UNDERSTANDING_CACHE_TTL_SECONDS = 60 * 60 * 24 * 30;
 
 export function understandWithRules(
   input: UnderstandMessageInput,
@@ -241,6 +295,15 @@ export function understandWithRules(
       null,
     );
   }
+  if (/^(hi|hello|hey|namaste|yo)\b[!. ]*$/.test(normalized)) {
+    return parsedUnderstanding(
+      "general_chat",
+      0.9,
+      {},
+      null,
+      "Hi. I can help with PDF print orders, quotes, payment links, order status, and pickup. What would you like to print today?",
+    );
+  }
   if (/\b(status|where is|ready|done|progress|track)\b/.test(normalized)) {
     return parsedUnderstanding("ask_order_status", 0.9, {}, null, null);
   }
@@ -262,7 +325,7 @@ export function understandWithRules(
   }
   if (
     input.hasPdf ||
-    /\b(print(?:ing)?|pdf|document|file|copy|copies|sets?|xerox|binding|spiral|staple|duplex|double|both side|single|single side|one side|black and white|b&w|bw|colou?r|pickup)\b/.test(
+    /\b(print(?:ing)?|pdf|document|file|copy|copies|sets?|xerox|binding|spiral|staple|duplex|double|both (?:the )?sides?|single|single side|one side|black and white|b&w|bw|colou?r|pickup)\b/.test(
       normalized,
     )
   ) {
@@ -278,22 +341,13 @@ export function understandWithRules(
       null,
     );
   }
-  if (input.activeOrderSummary && Object.keys(slots).length > 0) {
+  if (input.activeOrderSummary && hasActionablePrintSlots(slots)) {
     return parsedUnderstanding(
       "update_order_details",
       extraction.confidence,
       slots,
       null,
       null,
-    );
-  }
-  if (/^(hi|hello|hey|namaste|yo)\b[!. ]*$/.test(normalized)) {
-    return parsedUnderstanding(
-      "general_chat",
-      0.9,
-      {},
-      null,
-      "Hi. I can help with PDF print orders, quotes, payment links, order status, and pickup. What would you like to print today?",
     );
   }
   if (normalized.endsWith("?")) {
@@ -313,6 +367,15 @@ export function understandWithRules(
     null,
     "I understand. For this print-order service, send a PDF or tell me the print details you need.",
   );
+}
+
+function hasActionablePrintSlots(
+  slots: MessageUnderstanding["slots"],
+): boolean {
+  return Object.entries(slots).some(([key, value]) => {
+    if (value === null || value === undefined) return false;
+    return key !== "fulfillmentType" && key !== "specialInstructions";
+  });
 }
 
 function understandingPrompt(input: UnderstandMessageInput): string {
@@ -347,7 +410,7 @@ Business context:
 - For unrelated topics, use general_chat and briefly redirect to print-order help.
 - If intent/details are ambiguous, use unclear and provide a targeted ambiguity.question.
 
-Active order context: ${input.activeOrderSummary ?? "none"}
+Active order context: ${cacheSafeActiveOrderSummary(input.activeOrderSummary) ?? "none"}
 Recent messages: ${JSON.stringify(input.recentMessages.slice(-8))}
 Media metadata: ${JSON.stringify(input.media)}
 hasPdf=${input.hasPdf}
@@ -373,8 +436,87 @@ function parsedUnderstanding(
 function shouldEscalateToAi(understanding: MessageUnderstanding): boolean {
   return (
     understanding.intent === "unclear" ||
-    understanding.confidence < AI_ESCALATION_CONFIDENCE_THRESHOLD
+    understanding.confidence < AI_ESCALATION_CONFIDENCE_THRESHOLD ||
+    (understanding.intent === "update_order_details" &&
+      !hasActionablePrintSlots(understanding.slots))
   );
+}
+
+async function aiUnderstandingCacheKey(
+  input: UnderstandMessageInput,
+): Promise<string> {
+  const normalizedBody = input.body.trim().toLowerCase().replace(/\s+/g, " ");
+  const contextDependent =
+    /\b(it|that|this|same|previous|last|earlier|again|before|usual)\b/.test(
+      normalizedBody,
+    );
+  const cacheInput = JSON.stringify({
+    version: 1,
+    body: normalizedBody,
+    hasPdf: input.hasPdf,
+    activeOrderSummary: cacheSafeActiveOrderSummary(input.activeOrderSummary),
+    recentMessages: contextDependent
+      ? input.recentMessages.slice(-8).map((message) =>
+          message.trim().toLowerCase().replace(/\s+/g, " "),
+        )
+      : [],
+    media: input.media.map((media) => ({
+      contentType: media.contentType,
+      hasPageCount: media.pageCount !== null,
+    })),
+  });
+  const digest = await crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(cacheInput),
+  );
+  return `message-understanding:v1:${Array.from(new Uint8Array(digest))
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("")}`;
+}
+
+function cacheSafeActiveOrderSummary(summary: string | null | undefined): string | null {
+  return summary?.replace(/order TOBI-[A-Z0-9]+/gi, "active order") ?? null;
+}
+
+function logMessageUnderstandingError(mode: string, error: unknown): void {
+  const summary =
+    error instanceof Error
+      ? {
+          name: error.name,
+          message: error.message.slice(0, 500),
+        }
+      : {
+          name: "UnknownError",
+          message: String(error).slice(0, 500),
+        };
+  console.error("message_understanding_ai_fallback", {
+    mode,
+    provider: "gemini",
+    model: DEFAULT_GEMINI_MODEL,
+    error: summary,
+  });
+}
+
+function logAiCacheError(operation: "read" | "write", error: unknown): void {
+  console.error("message_understanding_ai_cache_error", {
+    operation,
+    message:
+      error instanceof Error
+        ? error.message.slice(0, 500)
+        : String(error).slice(0, 500),
+  });
+}
+
+function logMessageUnderstandingSuccess(
+  model: string,
+  understanding: MessageUnderstanding,
+): void {
+  console.log("message_understanding_ai_success", {
+    provider: "gemini",
+    model,
+    intent: understanding.intent,
+    confidence: understanding.confidence,
+  });
 }
 
 function compactSlots(slots: Record<string, unknown>): Record<string, unknown> {

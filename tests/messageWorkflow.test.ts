@@ -308,6 +308,138 @@ describe("message workflow", () => {
     expect(await store.listOrders()).toHaveLength(0);
   });
 
+  it("does not let stale order context turn generic unclear messages into page-count prompts", async () => {
+    const store = new MemoryTobiStore();
+    const customer = await store.upsertCustomer({ whatsappNumber: "whatsapp:+919900000009" });
+    let order = await store.createOrder({ customerId: customer.id, shopId: "shop_demo" });
+    await store.addOrderFile({
+      orderId: order.id,
+      originalFilename: "old-upload.pdf",
+      mimeType: "application/pdf",
+      r2Key: "orders/old-upload.pdf",
+      pageCount: null,
+      fileSizeBytes: 1000,
+    });
+    await store.transitionOrder(order.id, "AWAITING_DETAILS");
+    const previousMessage = await createInboundMessage(store, customer.id, "2 copies black and white");
+    await store.attachMessageToOrder(previousMessage.id, order.id);
+    const inboundMessage = await createInboundMessage(store, customer.id, "hello");
+
+    const result = await handleInboundWorkflow({
+      store,
+      env,
+      customer,
+      activeOrder: await store.getOrder(order.id),
+      inboundMessage,
+      inbound: inbound("hello"),
+      understandingProvider: sequentialProvider([
+        {
+          intent: "unclear",
+          confidence: 0.4,
+          slots: {},
+          ambiguity: {
+            field: null,
+            question: "Please tell me what you want to do with the print order.",
+          },
+          customerReplyDraft: null,
+        },
+        {
+          intent: "update_order_details",
+          confidence: 0.95,
+          slots: {
+            copies: 2,
+            colorMode: "black_and_white",
+            sideMode: "single_sided",
+          },
+          ambiguity: null,
+          customerReplyDraft: null,
+        },
+      ]),
+    });
+
+    expect(result.reply).toBe("Please tell me what you want to do with the print order.");
+    expect(result.reply).not.toContain("could not detect the page count");
+  });
+
+  it("treats greetings as general chat even when an older order is awaiting page count", async () => {
+    const store = new MemoryTobiStore();
+    const customer = await store.upsertCustomer({ whatsappNumber: "whatsapp:+919900000011" });
+    let order = await store.createOrder({ customerId: customer.id, shopId: "shop_demo" });
+    await store.addOrderFile({
+      orderId: order.id,
+      originalFilename: "old-upload.pdf",
+      mimeType: "application/pdf",
+      r2Key: "orders/old-upload.pdf",
+      pageCount: null,
+      fileSizeBytes: 1000,
+    });
+    await store.transitionOrder(order.id, "AWAITING_DETAILS");
+    const inboundMessage = await createInboundMessage(store, customer.id, "hello");
+
+    const result = await handleInboundWorkflow({
+      store,
+      env,
+      customer,
+      activeOrder: await store.getOrder(order.id),
+      inboundMessage,
+      inbound: inbound("hello"),
+    });
+
+    expect(result.reply).toContain("Hi. I can help with PDF print orders");
+    expect(result.reply).not.toContain("could not detect the page count");
+  });
+
+  it("still uses order context for unclear messages that reference the current file", async () => {
+    const store = new MemoryTobiStore();
+    const customer = await store.upsertCustomer({ whatsappNumber: "whatsapp:+919900000010" });
+    let order = await store.createOrder({ customerId: customer.id, shopId: "shop_demo" });
+    await store.addOrderFile({
+      orderId: order.id,
+      originalFilename: "notes.pdf",
+      mimeType: "application/pdf",
+      r2Key: "orders/notes.pdf",
+      pageCount: 10,
+      fileSizeBytes: 1000,
+    });
+    await store.transitionOrder(order.id, "AWAITING_DETAILS");
+    const previousMessage = await createInboundMessage(store, customer.id, "2 copies black and white");
+    await store.attachMessageToOrder(previousMessage.id, order.id);
+    const inboundMessage = await createInboundMessage(store, customer.id, "same as before");
+
+    const result = await handleInboundWorkflow({
+      store,
+      env,
+      customer,
+      activeOrder: await store.getOrder(order.id),
+      inboundMessage,
+      inbound: inbound("same as before"),
+      understandingProvider: sequentialProvider([
+        {
+          intent: "unclear",
+          confidence: 0.45,
+          slots: {},
+          ambiguity: null,
+          customerReplyDraft: null,
+        },
+        {
+          intent: "update_order_details",
+          confidence: 0.95,
+          slots: {
+            copies: 2,
+            colorMode: "black_and_white",
+            sideMode: "single_sided",
+          },
+          ambiguity: null,
+          customerReplyDraft: null,
+        },
+      ]),
+    });
+
+    expect(result.reply).toContain("Please confirm your print order");
+    expect(result.reply).toContain("Pages: 10");
+    expect(result.reply).toContain("Copies: 2");
+  });
+
   it("does not create a stray order when confirm is repeated after payment link is sent", async () => {
     const store = new MemoryTobiStore();
     const customer = await store.upsertCustomer({ whatsappNumber: "whatsapp:+919900000005" });
@@ -432,6 +564,19 @@ describe("message workflow", () => {
 function provider(result: Awaited<ReturnType<MessageUnderstandingProvider["understandMessage"]>>): MessageUnderstandingProvider {
   return {
     async understandMessage() {
+      return result;
+    },
+  };
+}
+
+function sequentialProvider(
+  results: Array<Awaited<ReturnType<MessageUnderstandingProvider["understandMessage"]>>>,
+): MessageUnderstandingProvider {
+  let index = 0;
+  return {
+    async understandMessage() {
+      const result = results[Math.min(index, results.length - 1)];
+      index += 1;
       return result;
     },
   };

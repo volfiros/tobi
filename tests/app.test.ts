@@ -2,6 +2,7 @@ import { createApp } from "../src/app";
 import { MemoryTobiStore } from "../src/store";
 import { hmacSha256Hex } from "../src/services/razorpay";
 import { verifyTwilioSignature } from "../src/services/twilio";
+import { deflateSync } from "node:zlib";
 
 const env = {
   APP_ENV: "test",
@@ -24,6 +25,21 @@ const originalFetch = globalThis.fetch;
 beforeEach(() => {
   globalThis.fetch = (async (input: RequestInfo | URL) => {
     const url = String(input);
+    if (url.includes("compressed-pages.pdf")) {
+      return new Response(compressedPdfWithPages(7), {
+        headers: { "content-type": "application/pdf" }
+      });
+    }
+    if (url.includes("pages-tree-only.pdf")) {
+      return new Response(pdfWithPagesTreeCount(9), {
+        headers: { "content-type": "application/pdf" }
+      });
+    }
+    if (url.includes("misleading-stream-count.pdf")) {
+      return new Response(compressedPdfWithMisleadingPageTreeCount(), {
+        headers: { "content-type": "application/pdf" }
+      });
+    }
     const pages = url.includes("hrd-notes")
       ? url.includes("HRD_notes_4") || url.includes("hrd-notes-71")
         ? 71
@@ -45,6 +61,55 @@ afterEach(() => {
 
 function pdfWithPages(pages: number): string {
   return `%PDF-1.7\n${Array.from({ length: pages }, (_, index) => `${index + 1} 0 obj\n<< /Type /Page >>\nendobj`).join("\n")}\n%%EOF`;
+}
+
+function compressedPdfWithPages(pages: number): Uint8Array {
+  const compressed = deflateSync(
+    Array.from(
+      { length: pages },
+      (_, index) => `${index + 1} 0 obj\n<< /Type /Page >>\nendobj`,
+    ).join("\n"),
+  );
+  const prefix = new TextEncoder().encode(
+    `%PDF-1.7\n1 0 obj\n<< /Filter /FlateDecode /Length ${compressed.byteLength} >>\nstream\n`,
+  );
+  const suffix = new TextEncoder().encode("\nendstream\nendobj\n%%EOF");
+  const bytes = new Uint8Array(prefix.byteLength + compressed.byteLength + suffix.byteLength);
+  bytes.set(prefix);
+  bytes.set(compressed, prefix.byteLength);
+  bytes.set(suffix, prefix.byteLength + compressed.byteLength);
+  return bytes;
+}
+
+function compressedPdfWithMisleadingPageTreeCount(): Uint8Array {
+  const compressed = deflateSync(
+    [
+      "1 0 obj",
+      "<< /Type /Page >>",
+      "endobj",
+      "<< /Count 4 /Type /Pages >>",
+    ].join("\n"),
+  );
+  const prefix = new TextEncoder().encode(
+    `%PDF-1.7\n1 0 obj\n<< /Filter /FlateDecode /Length ${compressed.byteLength} >>\nstream\n`,
+  );
+  const suffix = new TextEncoder().encode("\nendstream\nendobj\n%%EOF");
+  const bytes = new Uint8Array(prefix.byteLength + compressed.byteLength + suffix.byteLength);
+  bytes.set(prefix);
+  bytes.set(compressed, prefix.byteLength);
+  bytes.set(suffix, prefix.byteLength + compressed.byteLength);
+  return bytes;
+}
+
+function pdfWithPagesTreeCount(pages: number): string {
+  return `%PDF-1.7
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Count ${pages} /Kids [] >>
+endobj
+%%EOF`;
 }
 
 describe("Tobi app", () => {
@@ -235,6 +300,84 @@ describe("Tobi app", () => {
       Body: "2 copies B&W spiral double sided pickup at 5",
       NumMedia: "1",
       MediaUrl0: "https://example.test/sample.pdf",
+      MediaContentType0: "application/pdf"
+    });
+
+    const response = await app.request(
+      "/webhooks/whatsapp",
+      {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        body
+      },
+      env
+    );
+
+    expect(response.status).toBe(200);
+    const [order] = await store.listOrders();
+    expect(order.printOptions.pageCount).toBe(1);
+  });
+
+  it("counts PDF pages from compressed PDF streams", async () => {
+    const store = new MemoryTobiStore();
+    const app = createApp(store);
+    const body = new URLSearchParams({
+      From: "whatsapp:+919999999976",
+      Body: "2 copies B&W spiral double sided pickup at 5",
+      NumMedia: "1",
+      MediaUrl0: "https://example.test/compressed-pages.pdf",
+      MediaContentType0: "application/pdf"
+    });
+
+    const response = await app.request(
+      "/webhooks/whatsapp",
+      {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        body
+      },
+      env
+    );
+
+    expect(response.status).toBe(200);
+    const [order] = await store.listOrders();
+    expect(order.printOptions.pageCount).toBe(7);
+  });
+
+  it("counts PDF pages from page tree count entries", async () => {
+    const store = new MemoryTobiStore();
+    const app = createApp(store);
+    const body = new URLSearchParams({
+      From: "whatsapp:+919999999975",
+      Body: "2 copies B&W spiral double sided pickup at 5",
+      NumMedia: "1",
+      MediaUrl0: "https://example.test/pages-tree-only.pdf",
+      MediaContentType0: "application/pdf"
+    });
+
+    const response = await app.request(
+      "/webhooks/whatsapp",
+      {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        body
+      },
+      env
+    );
+
+    expect(response.status).toBe(200);
+    const [order] = await store.listOrders();
+    expect(order.printOptions.pageCount).toBe(9);
+  });
+
+  it("prefers explicit compressed page objects over misleading stream counts", async () => {
+    const store = new MemoryTobiStore();
+    const app = createApp(store);
+    const body = new URLSearchParams({
+      From: "whatsapp:+919999999974",
+      Body: "2 copies B&W spiral double sided pickup at 5",
+      NumMedia: "1",
+      MediaUrl0: "https://example.test/misleading-stream-count.pdf",
       MediaContentType0: "application/pdf"
     });
 
@@ -593,6 +736,35 @@ describe("Tobi app", () => {
     expect(after.status).toBe("QUOTE_READY");
     expect(after.printOptions.colorMode).toBe("color");
     expect(after.totalPaise).toBeGreaterThan(before.totalPaise);
+  });
+
+  it("recomputes a quote-ready order for both the sides phrasing", async () => {
+    const store = new MemoryTobiStore();
+    const app = createApp(store);
+    const first = new URLSearchParams({
+      From: "whatsapp:+919999999975",
+      MessageSid: "SM_REQUOTE_BOTH_THE_SIDES_FIRST",
+      Body: "1 copy B&W single sided",
+      NumMedia: "1",
+      MediaUrl0: "https://example.test/notes.pdf",
+      MediaContentType0: "application/pdf",
+      pageCount: "3"
+    });
+    const edit = new URLSearchParams({
+      From: "whatsapp:+919999999975",
+      MessageSid: "SM_REQUOTE_BOTH_THE_SIDES_EDIT",
+      Body: "want it to be on both the sides",
+      NumMedia: "0"
+    });
+
+    await app.request("/webhooks/whatsapp", { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body: first }, env);
+    const [order] = await store.listOrders();
+    const response = await app.request("/webhooks/whatsapp", { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body: edit }, env);
+    const updated = await store.getOrder(order.id);
+
+    expect(await response.text()).toContain("Sides: double sided");
+    expect(updated?.status).toBe("QUOTE_READY");
+    expect(updated?.printOptions.sideMode).toBe("double_sided");
   });
 
   it("does not mutate print options after a payment link is sent", async () => {

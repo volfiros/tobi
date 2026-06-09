@@ -12,6 +12,12 @@ describe("mock extraction", () => {
     expect(extraction.customerReplyDraft).not.toMatch(/₹|rs|rupee|total/i);
   });
 
+  it("understands both the sides as double-sided", () => {
+    expect(extractWithRules("want it to be on both the sides").sideMode).toBe(
+      "double_sided",
+    );
+  });
+
   it("classifies greetings as conversational support instead of print orders", () => {
     const extraction = extractWithRules("hello");
 

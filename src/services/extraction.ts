@@ -11,7 +11,7 @@ export function extractWithRules(body: string, hasFile = false): PrintOrderExtra
     : /\b(bw|b\/w|black|black and white|b&w)\b/.test(normalized)
       ? "black_and_white"
       : null;
-  const sideMode = /\b(double|duplex|both sides?|two[- ]sided|2[- ]sided|double[- ]sided)\b/.test(normalized)
+  const sideMode = /\b(double|duplex|both (?:the )?sides?|two[- ]sided|2[- ]sided|double[- ]sided)\b/.test(normalized)
     ? "double_sided"
     : /\b(single|one[- ]side|1[- ]side|single[- ]sided|one[- ]sided)\b/.test(normalized)
       ? "single_sided"

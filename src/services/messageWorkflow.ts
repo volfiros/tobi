@@ -14,6 +14,7 @@ import {
 } from "./orderMessages";
 import {
   createMessageUnderstandingProvider,
+  type MessageIntent,
   type MessageUnderstanding,
   type MessageUnderstandingProvider,
 } from "./messageUnderstanding";
@@ -128,6 +129,8 @@ export async function handleInboundWorkflow(input: {
     provider: understandingProvider,
     order,
     currentUnderstanding: understanding,
+    currentBody: input.inbound.body,
+    inboundHasPdf,
   });
   const validation = validateUnderstandingSlots({
     confidence: contextualUnderstanding.confidence,
@@ -508,7 +511,19 @@ async function understandingWithOrderContext(input: {
   provider: MessageUnderstandingProvider;
   order: Order;
   currentUnderstanding: MessageUnderstanding;
+  currentBody: string;
+  inboundHasPdf: boolean;
 }): Promise<MessageUnderstanding> {
+  if (
+    !canUseOrderContext(
+      input.currentUnderstanding.intent,
+      input.currentBody,
+      input.inboundHasPdf,
+    )
+  ) {
+    return input.currentUnderstanding;
+  }
+
   const messages = await input.store.listInboundMessagesForOrder(
     input.order.id,
   );
@@ -552,6 +567,26 @@ async function understandingWithOrderContext(input: {
       input.currentUnderstanding.customerReplyDraft ??
       contextual.customerReplyDraft,
   };
+}
+
+function canUseOrderContext(
+  intent: MessageIntent,
+  body: string,
+  inboundHasPdf: boolean,
+): boolean {
+  if (
+    intent === "start_print_order" ||
+    intent === "update_order_details" ||
+    intent === "ask_quote"
+  ) {
+    return true;
+  }
+  if (intent !== "unclear") return false;
+  return (
+    inboundHasPdf ||
+    hasPrintInstructionDetails(body) ||
+    hasOrderContextReference(body)
+  );
 }
 
 function shouldReuseActiveOrder(
@@ -655,7 +690,14 @@ function cancelOrderActions(): WorkflowAction[] {
 
 function hasPrintInstructionDetails(body: string): boolean {
   const normalized = body.toLowerCase();
-  return /\b(copy|copies|sets?|bw|b\/w|black|black and white|b&w|colou?r|double|duplex|both sides?|both side|two[- ]sided|2[- ]sided|single|single side|one[- ]sided|1[- ]sided|spiral|staple|soft bind|hard bind|no binding|pickup|at \d{1,2}|by \d{1,2}|[2468][- ]?up|[2468]\s+pages?\s+(?:on|onto|per|in|into|fit|fitted|printed))\b/.test(
+  return /\b(copy|copies|sets?|bw|b\/w|black|black and white|b&w|colou?r|double|duplex|both (?:the )?sides?|two[- ]sided|2[- ]sided|single|single side|one[- ]sided|1[- ]sided|spiral|staple|soft bind|hard bind|no binding|pickup|at \d{1,2}|by \d{1,2}|[2468][- ]?up|[2468]\s+pages?\s+(?:on|onto|per|in|into|fit|fitted|printed))\b/.test(
+    normalized,
+  );
+}
+
+function hasOrderContextReference(body: string): boolean {
+  const normalized = body.toLowerCase();
+  return /\b(same|previous|last|earlier|again|that|this|it|order|file|pdf|document)\b/.test(
     normalized,
   );
 }
