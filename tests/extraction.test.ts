@@ -16,6 +16,72 @@ describe("mock extraction", () => {
     expect(extractWithRules("want it to be on both the sides").sideMode).toBe(
       "double_sided",
     );
+    expect(extractWithRules("front and back print karna").sideMode).toBe(
+      "double_sided",
+    );
+  });
+
+  it("extracts A4 and copy counts separated by a paper-size phrase", () => {
+    expect(extractWithRules("Two copies, A4, black and white").paperSize).toBe(
+      "A4",
+    );
+    const legalCopy = extractWithRules("One legal size copy with hard binding");
+    expect(legalCopy.copies).toBe(1);
+    expect(legalCopy.paperSize).toBe("legal");
+  });
+
+  it("fuzzily matches near-miss print option wording", () => {
+    const extraction = extractWithRules(
+      "prnt this blak and wite spirl doble sideed",
+    );
+
+    expect(extraction.intent).toBe("provide_order_details");
+    expect(extraction.colorMode).toBe("black_and_white");
+    expect(extraction.bindingType).toBe("spiral");
+    expect(extraction.sideMode).toBe("double_sided");
+  });
+
+  it("fuzzily matches near-miss single-sided and color wording", () => {
+    const extraction = extractWithRules("make it colr and singel sided");
+
+    expect(extraction.intent).toBe("provide_order_details");
+    expect(extraction.colorMode).toBe("color");
+    expect(extraction.sideMode).toBe("single_sided");
+  });
+
+  it("treats color removal as black-and-white", () => {
+    expect(extractWithRules("remove the color mode").colorMode).toBe(
+      "black_and_white",
+    );
+    expect(extractWithRules("i do not want color").colorMode).toBe(
+      "black_and_white",
+    );
+  });
+
+  it("treats side-mode removal as the opposite deterministic side mode", () => {
+    expect(extractWithRules("remove double sided mode").sideMode).toBe(
+      "single_sided",
+    );
+    expect(extractWithRules("print only on the front of each sheet").sideMode).toBe(
+      "single_sided",
+    );
+    expect(extractWithRules("do not want single sided").sideMode).toBe(
+      "double_sided",
+    );
+  });
+
+  it("treats binding removal as default or no binding", () => {
+    expect(extractWithRules("remove spiral binding").bindingType).toBe(
+      "staple",
+    );
+    expect(extractWithRules("remove binding").bindingType).toBe("none");
+    expect(extractWithRules("do not want staple").bindingType).toBe("none");
+  });
+
+  it("treats layout removal as one-up layout", () => {
+    expect(extractWithRules("remove 4-up layout").pagesPerSheet).toBe(1);
+    expect(extractWithRules("normal layout please").pagesPerSheet).toBe(1);
+    expect(extractWithRules("one page per sheet").pagesPerSheet).toBe(1);
   });
 
   it("classifies greetings as conversational support instead of print orders", () => {

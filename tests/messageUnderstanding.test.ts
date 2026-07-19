@@ -1,8 +1,11 @@
 import {
   AI_ESCALATION_CONFIDENCE_THRESHOLD,
+  AI_PROVIDER_DEADLINE_MS,
+  AI_PROVIDER_MAX_OUTPUT_TOKENS,
   AI_UNDERSTANDING_CACHE_TTL_SECONDS,
   CachedMessageUnderstandingProvider,
-  DEFAULT_GEMINI_MODEL,
+  DEFAULT_OPENAI_BASE_URL,
+  DEFAULT_OPENAI_MODEL,
   RuleMessageUnderstandingProvider,
   RuleFirstMessageUnderstandingProvider,
   messageUnderstandingSchema,
@@ -12,8 +15,11 @@ import {
 } from "../src/services/messageUnderstanding";
 
 describe("message understanding", () => {
-  it("uses Gemini 2.5 Flash Lite as the default model", () => {
-    expect(DEFAULT_GEMINI_MODEL).toBe("gemini-2.5-flash-lite");
+  it("uses fast GPT-5.4 mini defaults through CodeGate", () => {
+    expect(DEFAULT_OPENAI_BASE_URL).toBe("https://codegate.dev/v1");
+    expect(DEFAULT_OPENAI_MODEL).toBe("gpt-5.4-mini");
+    expect(AI_PROVIDER_DEADLINE_MS).toBe(4_900);
+    expect(AI_PROVIDER_MAX_OUTPUT_TOKENS).toBe(384);
     expect(AI_ESCALATION_CONFIDENCE_THRESHOLD).toBe(0.8);
     expect(AI_UNDERSTANDING_CACHE_TTL_SECONDS).toBe(60 * 60 * 24 * 30);
   });
@@ -49,6 +55,38 @@ describe("message understanding", () => {
     ).resolves.toMatchObject({
       intent: "general_chat",
       slots: {},
+    });
+  });
+
+  it("does not treat a generic request for help as human support", async () => {
+    const provider = new RuleMessageUnderstandingProvider();
+
+    await expect(
+      provider.understandMessage({
+        body: "Can you help me choose a birthday cake for my friend?",
+        hasPdf: false,
+        activeOrderSummary: null,
+        recentMessages: [],
+        media: [],
+      }),
+    ).resolves.toMatchObject({
+      intent: "general_chat",
+    });
+  });
+
+  it("still recognizes explicit requests for shop staff", async () => {
+    const provider = new RuleMessageUnderstandingProvider();
+
+    await expect(
+      provider.understandMessage({
+        body: "Let me talk to the shop staff",
+        hasPdf: false,
+        activeOrderSummary: null,
+        recentMessages: [],
+        media: [],
+      }),
+    ).resolves.toMatchObject({
+      intent: "human_support",
     });
   });
 
@@ -102,6 +140,56 @@ describe("message understanding", () => {
     });
   });
 
+  it("understands color removal against an active order", async () => {
+    const provider = new RuleMessageUnderstandingProvider();
+
+    await expect(
+      provider.understandMessage({
+        body: "i do not want color",
+        hasPdf: false,
+        activeOrderSummary: "Order has PDF, color, one copy, double sided",
+        recentMessages: [],
+        media: [],
+      }),
+    ).resolves.toMatchObject({
+      intent: "update_order_details",
+      slots: { colorMode: "black_and_white" },
+    });
+  });
+
+  it("understands side, binding, and layout removal against an active order", async () => {
+    const provider = new RuleMessageUnderstandingProvider();
+
+    await expect(
+      provider.understandMessage({
+        body: "remove double sided mode and remove spiral binding",
+        hasPdf: false,
+        activeOrderSummary: "Order has PDF, color, one copy, double sided, spiral, 4-up",
+        recentMessages: [],
+        media: [],
+      }),
+    ).resolves.toMatchObject({
+      intent: "update_order_details",
+      slots: {
+        sideMode: "single_sided",
+        bindingType: "staple",
+      },
+    });
+
+    await expect(
+      provider.understandMessage({
+        body: "normal layout please",
+        hasPdf: false,
+        activeOrderSummary: "Order has PDF, color, one copy, double sided, 4-up",
+        recentMessages: [],
+        media: [],
+      }),
+    ).resolves.toMatchObject({
+      intent: "update_order_details",
+      slots: { pagesPerSheet: 1 },
+    });
+  });
+
   it("understands both the sides as an active-order double-sided edit", async () => {
     const provider = new RuleMessageUnderstandingProvider();
 
@@ -116,6 +204,27 @@ describe("message understanding", () => {
     ).resolves.toMatchObject({
       intent: "update_order_details",
       slots: { sideMode: "double_sided" },
+    });
+  });
+
+  it("uses fuzzy rule matching for active-order typo edits", async () => {
+    const provider = new RuleMessageUnderstandingProvider();
+
+    await expect(
+      provider.understandMessage({
+        body: "make it blak and wite spirl doble sideed",
+        hasPdf: false,
+        activeOrderSummary: "Order has PDF, color, one copy, single sided",
+        recentMessages: [],
+        media: [],
+      }),
+    ).resolves.toMatchObject({
+      intent: "update_order_details",
+      slots: {
+        colorMode: "black_and_white",
+        bindingType: "spiral",
+        sideMode: "double_sided",
+      },
     });
   });
 
@@ -147,6 +256,45 @@ describe("message understanding", () => {
 
     expect(result.intent).toBe("unclear");
     expect(result.ambiguity?.question).toContain("Do you mean");
+  });
+
+  it("asks for a binding type when the requested binding is ambiguous", () => {
+    const result = understandWithRules({
+      body: "use the proper binding",
+      hasPdf: false,
+      activeOrderSummary: "Active order has a PDF and is awaiting details",
+      recentMessages: [],
+      media: [],
+    });
+
+    expect(result.intent).toBe("unclear");
+    expect(result.ambiguity?.field).toBe("bindingType");
+    expect(result.ambiguity?.question).toContain("Which binding");
+    expect(result.slots.bindingType).toBeUndefined();
+  });
+
+  it("preserves a targeted rules ambiguity when AI returns a non-ambiguous intent", async () => {
+    const provider = new RuleFirstMessageUnderstandingProvider(
+      new RuleMessageUnderstandingProvider(),
+      {
+        async understandMessage() {
+          return understanding({ intent: "general_chat", confidence: 0.9 });
+        },
+      },
+    );
+
+    await expect(
+      provider.understandMessage({
+        body: "do that one again",
+        hasPdf: false,
+        activeOrderSummary: "Active order has a PDF",
+        recentMessages: [],
+        media: [],
+      }),
+    ).resolves.toMatchObject({
+      intent: "unclear",
+      ambiguity: { question: expect.any(String) },
+    });
   });
 
   it("redirects unrelated questions to print help", () => {
@@ -244,6 +392,75 @@ describe("message understanding", () => {
       },
     });
     expect(aiCalls).toBe(0);
+  });
+
+  it("handles fully recognized mixed active-order instructions without AI", async () => {
+    let aiCalls = 0;
+    const provider = new RuleFirstMessageUnderstandingProvider(
+      new RuleMessageUnderstandingProvider(),
+      {
+        async understandMessage() {
+          aiCalls += 1;
+          return understanding({
+            intent: "update_order_details",
+            confidence: 0.9,
+            slots: { sideMode: "double_sided" },
+          });
+        },
+      },
+    );
+
+    await expect(
+      provider.understandMessage({
+        body: "make it two copies and put the writing on the front and back",
+        hasPdf: false,
+        activeOrderSummary: "order TOBI-TEST, status QUOTE_READY",
+        recentMessages: [],
+        media: [],
+      }),
+    ).resolves.toMatchObject({
+      intent: "update_order_details",
+      slots: {
+        copies: 2,
+        sideMode: "double_sided",
+      },
+    });
+    expect(aiCalls).toBe(0);
+  });
+
+  it("keeps rule slots when AI returns no actionable slot for a reviewed active-order edit", async () => {
+    const provider = new RuleFirstMessageUnderstandingProvider(
+      new RuleMessageUnderstandingProvider(),
+      {
+        async understandMessage() {
+          return understanding({
+            intent: "unclear",
+            confidence: 0.86,
+            slots: {},
+            ambiguity: {
+              field: null,
+              question: "Please clarify the second print instruction.",
+            },
+          });
+        },
+      },
+    );
+
+    await expect(
+      provider.understandMessage({
+        body: "make it two copies and make it neat",
+        hasPdf: false,
+        activeOrderSummary: "order TOBI-TEST, status QUOTE_READY",
+        recentMessages: [],
+        media: [],
+      }),
+    ).resolves.toMatchObject({
+      intent: "update_order_details",
+      slots: { copies: 2 },
+      ambiguity: {
+        question: "Please clarify the second print instruction.",
+      },
+    });
   });
 
   it("escalates low-confidence relevant rule matches to AI", async () => {
@@ -452,6 +669,43 @@ describe("message understanding", () => {
     expect(aiCalls).toBe(2);
   });
 
+  it("namespaces cached understanding by provider model and prompt schema", async () => {
+    let aiCalls = 0;
+    const cache = memoryKv();
+    const input = {
+      body: "make it look neat",
+      hasPdf: false,
+      activeOrderSummary: "order TOBI-ABCD, status AWAITING_DETAILS",
+      recentMessages: [],
+      media: [],
+    };
+    const makeProvider = (model: string) =>
+      new CachedMessageUnderstandingProvider(
+        {
+          async understandMessage() {
+            aiCalls += 1;
+            return understanding({ confidence: 0.9 + aiCalls / 100 });
+          },
+        },
+        cache.namespace,
+        AI_UNDERSTANDING_CACHE_TTL_SECONDS,
+        {
+          provider: "openai",
+          gateway: "codegate",
+          baseUrl: "https://codegate.dev/v1",
+          model,
+          promptVersion: 2,
+          schemaVersion: 2,
+        },
+      );
+
+    await makeProvider("gpt-5.4-mini").understandMessage(input);
+    await makeProvider("gpt-5.4-mini-next").understandMessage(input);
+
+    expect(aiCalls).toBe(2);
+    expect(new Set(cache.keys).size).toBe(2);
+  });
+
   it("returns AI understanding when cache operations fail", async () => {
     const provider = new CachedMessageUnderstandingProvider(
       {
@@ -504,10 +758,12 @@ function understanding(
 function memoryKv(): {
   namespace: KVNamespace;
   putOptions: KVNamespacePutOptions | undefined;
+  keys: string[];
 } {
   const values = new Map<string, string>();
   const cache = {
     putOptions: undefined as KVNamespacePutOptions | undefined,
+    keys: [] as string[],
     namespace: {
       async get(key: string) {
         const value = values.get(key);
@@ -519,6 +775,7 @@ function memoryKv(): {
         options?: KVNamespacePutOptions,
       ) {
         values.set(key, value);
+        cache.keys.push(key);
         cache.putOptions = options;
       },
     } as unknown as KVNamespace,

@@ -16,6 +16,44 @@ const env = {
 } as unknown as Env;
 
 describe("message workflow", () => {
+  it("asks an AI clarification without creating an empty order", async () => {
+    const store = new MemoryTobiStore();
+    const customer = await store.upsertCustomer({
+      whatsappNumber: "whatsapp:+919900000099",
+    });
+    const inboundMessage = await createInboundMessage(
+      store,
+      customer.id,
+      "Make it feel more professional",
+    );
+
+    const result = await handleInboundWorkflow({
+      store,
+      env,
+      customer,
+      activeOrder: null,
+      inboundMessage,
+      inbound: inbound("Make it feel more professional"),
+      understandingProvider: provider({
+        intent: "unclear",
+        confidence: 0.92,
+        slots: {},
+        ambiguity: {
+          question: "Do you want advice, or should I change a print order?",
+          field: null,
+        },
+        customerReplyDraft: null,
+      }),
+    });
+
+    expect(result.orderId).toBeNull();
+    expect(result.reply).toBe(
+      "Do you want advice, or should I change a print order?",
+    );
+    expect(result.audit.flow).toBe("clarification_without_order");
+    expect(await store.listOrders()).toHaveLength(0);
+  });
+
   it("updates active order from indirect detail message", async () => {
     const store = new MemoryTobiStore();
     const customer = await store.upsertCustomer({ whatsappNumber: "whatsapp:+919900000001" });
@@ -113,6 +151,70 @@ describe("message workflow", () => {
     expect(updated?.status).toBe("QUOTE_READY");
     expect(updated?.printOptions.colorMode).toBe("color");
     expect(updated?.totalPaise).toBeGreaterThan(order.totalPaise);
+  });
+
+  it("answers status questions while a quote is awaiting confirmation", async () => {
+    const { store, customer, order } = await createQuoteReadyOrder(
+      "whatsapp:+919900000012",
+    );
+    const inboundMessage = await createInboundMessage(
+      store,
+      customer.id,
+      "Where is my print order?",
+    );
+
+    const result = await handleInboundWorkflow({
+      store,
+      env,
+      customer,
+      activeOrder: order,
+      inboundMessage,
+      inbound: inbound("Where is my print order?"),
+      understandingProvider: provider({
+        intent: "ask_order_status",
+        confidence: 0.98,
+        slots: {},
+        ambiguity: null,
+        customerReplyDraft: null,
+      }),
+    });
+
+    expect(result.reply).toContain(`Your active order is ${order.publicId}`);
+    expect(result.reply).toContain("quote ready");
+    expect(result.reply).not.toContain("Please confirm, cancel, or change");
+  });
+
+  it("answers payment-help questions while a quote is awaiting confirmation", async () => {
+    const { store, customer, order } = await createQuoteReadyOrder(
+      "whatsapp:+919900000013",
+    );
+    const inboundMessage = await createInboundMessage(
+      store,
+      customer.id,
+      "My payment link is not working",
+    );
+
+    const result = await handleInboundWorkflow({
+      store,
+      env,
+      customer,
+      activeOrder: order,
+      inboundMessage,
+      inbound: inbound("My payment link is not working"),
+      understandingProvider: provider({
+        intent: "payment_help",
+        confidence: 0.98,
+        slots: {},
+        ambiguity: null,
+        customerReplyDraft: null,
+      }),
+    });
+
+    expect(result.reply).toContain(`For ${order.publicId}`);
+    expect(result.reply).toContain(
+      "Confirm the quote first and I will create the payment link",
+    );
+    expect(result.reply).not.toContain("Please confirm, cancel, or change");
   });
 
   it("treats a generic binding edit as spiral before requoting", async () => {
@@ -305,6 +407,67 @@ describe("message workflow", () => {
 
     expect(result.reply).toContain("PDF print orders");
     expect(result.reply).not.toContain("joke");
+    expect(await store.listOrders()).toHaveLength(0);
+  });
+
+  it("uses a safe AI draft for print advice without creating an order", async () => {
+    const store = new MemoryTobiStore();
+    const customer = await store.upsertCustomer({
+      whatsappNumber: "whatsapp:+919900000014",
+    });
+    const body = "Should I use matte or glossy paper for my resume?";
+    const inboundMessage = await createInboundMessage(store, customer.id, body);
+
+    const result = await handleInboundWorkflow({
+      store,
+      env,
+      customer,
+      activeOrder: null,
+      inboundMessage,
+      inbound: inbound(body),
+      understandingProvider: provider({
+        intent: "general_chat",
+        confidence: 0.95,
+        slots: {},
+        ambiguity: null,
+        customerReplyDraft:
+          "For a professional resume, matte paper usually looks cleaner and is easier to read than glossy paper.",
+      }),
+    });
+
+    expect(result.reply).toContain("matte paper");
+    expect(result.orderId).toBeNull();
+    expect(await store.listOrders()).toHaveLength(0);
+  });
+
+  it("accepts concise print advice that does not repeat a print keyword", async () => {
+    const store = new MemoryTobiStore();
+    const customer = await store.upsertCustomer({
+      whatsappNumber: "whatsapp:+919900000015",
+    });
+    const body = "Keep the finish subtle but premium for office submission";
+    const inboundMessage = await createInboundMessage(store, customer.id, body);
+
+    const result = await handleInboundWorkflow({
+      store,
+      env,
+      customer,
+      activeOrder: null,
+      inboundMessage,
+      inbound: inbound(body),
+      understandingProvider: provider({
+        intent: "general_chat",
+        confidence: 0.95,
+        slots: {},
+        ambiguity: null,
+        customerReplyDraft:
+          "A clean, understated look is best for an office submission.",
+      }),
+    });
+
+    expect(result.reply).toBe(
+      "A clean, understated look is best for an office submission.",
+    );
     expect(await store.listOrders()).toHaveLength(0);
   });
 
@@ -608,4 +771,36 @@ async function createInboundMessage(
     mediaCount: 0,
     rawPayloadJson: "{}",
   });
+}
+
+async function createQuoteReadyOrder(whatsappNumber: string) {
+  const store = new MemoryTobiStore();
+  const customer = await store.upsertCustomer({ whatsappNumber });
+  let order = await store.createOrder({
+    customerId: customer.id,
+    shopId: "shop_demo",
+  });
+  await store.addOrderFile({
+    orderId: order.id,
+    originalFilename: "notes.pdf",
+    mimeType: "application/pdf",
+    r2Key: "orders/notes.pdf",
+    pageCount: 10,
+    fileSizeBytes: 1000,
+  });
+  order = await store.updatePrintOptions(order.id, {
+    copies: 1,
+    colorMode: "black_and_white",
+    sideMode: "single_sided",
+  });
+  order = await store.setQuote(order.id, {
+    pages: 10,
+    copies: 1,
+    pagesPerSheet: 1,
+    billableSheets: 10,
+    lineItems: [{ label: "Printing", amountPaise: 2000 }],
+    totalPaise: 2200,
+    currency: "INR",
+  });
+  return { store, customer, order };
 }

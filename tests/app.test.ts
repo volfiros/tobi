@@ -1099,6 +1099,160 @@ describe("Tobi app", () => {
     expect(await store.listOrders()).toHaveLength(0);
   });
 
+  it("shows typing only when a real AI request is made", async () => {
+    const store = new MemoryTobiStore();
+    const app = createApp(store);
+    const metaEnv = {
+      ...env,
+      OPENAI_API_KEY: "test-codegate-key",
+      OPENAI_BASE_URL: "https://codegate.dev/v1",
+      OPENAI_DEFAULT_MODEL: "gpt-5.4-mini",
+      MESSAGE_UNDERSTANDING_MODE: "rules_first",
+      WHATSAPP_ACCESS_TOKEN: "test-meta-token",
+      WHATSAPP_PHONE_NUMBER_ID: "1052415724631354",
+      WHATSAPP_GRAPH_API_VERSION: "v25.0",
+    } as unknown as Env;
+    const graphRequests: MetaSendBody[] = [];
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === "https://codegate.dev/v1/responses") {
+        return openAiGeneralChatResponse();
+      }
+      if (url.includes("graph.facebook.com")) {
+        const body = JSON.parse(String(init?.body)) as MetaSendBody;
+        graphRequests.push(body);
+        return body.typing_indicator
+          ? Response.json({ success: true })
+          : Response.json({ messages: [{ id: "wamid.OUTBOUND_AI" }] });
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    }) as typeof fetch;
+
+    const response = await app.request(
+      "/webhooks/whatsapp",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(
+          metaTextPayload(
+            "919999999966",
+            "wamid.INBOUND_AI",
+            "Could you make it feel more polished?",
+          ),
+        ),
+      },
+      metaEnv,
+    );
+
+    expect(response.status).toBe(200);
+    expect(graphRequests).toHaveLength(2);
+    expect(graphRequests[0]).toEqual({
+      messaging_product: "whatsapp",
+      status: "read",
+      message_id: "wamid.INBOUND_AI",
+      typing_indicator: { type: "text" },
+    });
+    expect(graphRequests[1]?.type).toBe("text");
+  });
+
+  it("does not show typing for a rules-only Meta response", async () => {
+    const store = new MemoryTobiStore();
+    const app = createApp(store);
+    const metaEnv = {
+      ...env,
+      OPENAI_API_KEY: "test-codegate-key",
+      OPENAI_BASE_URL: "https://codegate.dev/v1",
+      OPENAI_DEFAULT_MODEL: "gpt-5.4-mini",
+      MESSAGE_UNDERSTANDING_MODE: "rules_first",
+      WHATSAPP_ACCESS_TOKEN: "test-meta-token",
+      WHATSAPP_PHONE_NUMBER_ID: "1052415724631354",
+      WHATSAPP_GRAPH_API_VERSION: "v25.0",
+    } as unknown as Env;
+    const graphRequests: MetaSendBody[] = [];
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === "https://codegate.dev/v1/responses") {
+        throw new Error("Rules-only response unexpectedly called AI");
+      }
+      const body = JSON.parse(String(init?.body)) as MetaSendBody;
+      graphRequests.push(body);
+      return Response.json({ messages: [{ id: "wamid.OUTBOUND_RULE" }] });
+    }) as typeof fetch;
+
+    const response = await app.request(
+      "/webhooks/whatsapp",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(
+          metaTextPayload("919999999965", "wamid.INBOUND_RULE", "hello"),
+        ),
+      },
+      metaEnv,
+    );
+
+    expect(response.status).toBe(200);
+    expect(graphRequests).toHaveLength(1);
+    expect(graphRequests[0]?.typing_indicator).toBeUndefined();
+    expect(graphRequests[0]?.type).toBe("text");
+  });
+
+  it("still sends the AI reply when Meta rejects the typing indicator", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const store = new MemoryTobiStore();
+    const app = createApp(store);
+    const metaEnv = {
+      ...env,
+      OPENAI_API_KEY: "test-codegate-key",
+      OPENAI_BASE_URL: "https://codegate.dev/v1",
+      OPENAI_DEFAULT_MODEL: "gpt-5.4-mini",
+      MESSAGE_UNDERSTANDING_MODE: "rules_first",
+      WHATSAPP_ACCESS_TOKEN: "test-meta-token",
+      WHATSAPP_PHONE_NUMBER_ID: "1052415724631354",
+      WHATSAPP_GRAPH_API_VERSION: "v25.0",
+    } as unknown as Env;
+    const graphRequests: MetaSendBody[] = [];
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === "https://codegate.dev/v1/responses") {
+        return openAiGeneralChatResponse();
+      }
+      const body = JSON.parse(String(init?.body)) as MetaSendBody;
+      graphRequests.push(body);
+      if (body.typing_indicator) {
+        return Response.json(
+          { error: { message: "typing unavailable" } },
+          { status: 500 },
+        );
+      }
+      return Response.json({ messages: [{ id: "wamid.OUTBOUND_AFTER_TYPING_FAILURE" }] });
+    }) as typeof fetch;
+
+    const response = await app.request(
+      "/webhooks/whatsapp",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(
+          metaTextPayload(
+            "919999999964",
+            "wamid.INBOUND_TYPING_FAILURE",
+            "Could you make it feel more polished?",
+          ),
+        ),
+      },
+      metaEnv,
+    );
+
+    expect(response.status).toBe(200);
+    expect(graphRequests).toHaveLength(2);
+    expect(graphRequests[1]?.type).toBe("text");
+    const logs = JSON.stringify(errorSpy.mock.calls);
+    expect(logs).toContain("whatsapp_ai_typing_indicator_failed");
+    expect(logs).not.toContain("typing unavailable");
+    errorSpy.mockRestore();
+  });
+
   it("retries Meta replies when the Graph API send fails", async () => {
     const store = new MemoryTobiStore();
     const app = createApp(store);
@@ -1783,10 +1937,64 @@ function metaDocumentPayload(
   };
 }
 
+function openAiGeneralChatResponse(): Response {
+  const understanding = {
+    i: 9,
+    c: 0.95,
+    s: {
+      n: null,
+      c: null,
+      d: null,
+      p: null,
+      b: null,
+      l: null,
+      f: null,
+      t: null,
+      g: null,
+      x: null,
+    },
+    a: null,
+    r: "I can help make your print order more polished. Which print detail would you like to improve?",
+  };
+  return Response.json({
+    id: "resp_app_test",
+    object: "response",
+    created_at: 1,
+    status: "completed",
+    error: null,
+    model: "gpt-5.4-mini",
+    output: [
+      {
+        id: "msg_app_test",
+        type: "message",
+        status: "completed",
+        role: "assistant",
+        content: [
+          {
+            type: "output_text",
+            text: JSON.stringify(understanding),
+            annotations: [],
+          },
+        ],
+      },
+    ],
+    usage: {
+      input_tokens: 100,
+      input_tokens_details: { cached_tokens: 0 },
+      output_tokens: 50,
+      output_tokens_details: { reasoning_tokens: 0 },
+      total_tokens: 150,
+    },
+  });
+}
+
 type MetaSendBody = {
   messaging_product: string;
-  to: string;
-  type: "text" | "interactive";
+  to?: string;
+  type?: "text" | "interactive";
+  status?: "read";
+  message_id?: string;
+  typing_indicator?: { type: "text" };
   text?: {
     preview_url: boolean;
     body: string;

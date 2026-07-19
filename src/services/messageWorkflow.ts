@@ -48,6 +48,7 @@ export async function handleInboundWorkflow(input: {
   inbound: InboundWhatsAppMessage;
   activeOrder: Order | null;
   understandingProvider?: MessageUnderstandingProvider;
+  onAiRequestStart?: () => void;
   boundOrder?: Order | null;
   skipMediaStorage?: boolean;
 }): Promise<WorkflowResult> {
@@ -56,7 +57,9 @@ export async function handleInboundWorkflow(input: {
   );
   const understandingProvider =
     input.understandingProvider ??
-    createMessageUnderstandingProvider(input.env);
+    createMessageUnderstandingProvider(input.env, {
+      onAiRequestStart: input.onAiRequestStart,
+    });
   const understanding = await understandingProvider.understandMessage({
     body: input.inbound.body,
     hasPdf: inboundHasPdf,
@@ -92,6 +95,23 @@ export async function handleInboundWorkflow(input: {
     inboundHasPdf,
   });
   if (conversationalReply) return conversationalReply;
+
+  if (
+    understanding.intent === "unclear" &&
+    !input.activeOrder &&
+    !input.boundOrder &&
+    !inboundHasPdf
+  ) {
+    return {
+      orderId: null,
+      reply:
+        understanding.ambiguity?.question ??
+        "I am not fully sure what you need. Please tell me whether you want to print a PDF, check an order, or get payment help.",
+      audit: workflowAudit(understanding, null, {
+        flow: "clarification_without_order",
+      }),
+    };
+  }
 
   let order =
     input.boundOrder ??
@@ -219,6 +239,18 @@ async function handleQuoteReadyMessage(input: {
   const { activeOrder, env, inbound, store, understanding } = input;
   if (!activeOrder || activeOrder.status !== "QUOTE_READY") return null;
 
+  if (
+    [
+      "ask_current_file",
+      "ask_order_status",
+      "payment_help",
+      "human_support",
+      "general_chat",
+    ].includes(understanding.intent)
+  ) {
+    return null;
+  }
+
   if (understanding.intent === "cancel_order" || isCancelReply(inbound.body)) {
     const cancelled = await store.transitionOrder(activeOrder.id, "CANCELLED");
     await store.addOrderEvent(cancelled.id, "customer_cancelled_quote", {
@@ -338,6 +370,8 @@ async function replyForNonOrderIntent(input: {
           `For ${activeOrder.publicId}, payment status is ${activeOrder.paymentStatus.replaceAll("_", " ")}.`,
           activeOrder.paymentLink
             ? `Payment link: ${activeOrder.paymentLink}`
+            : activeOrder.status === "QUOTE_READY"
+              ? "Confirm the quote first and I will create the payment link."
             : "I do not have a payment link for this order yet.",
         ].join("\n")
       : "I can help with payment. If you already have an order, send the order ID or describe what happened with the payment link.";
@@ -400,7 +434,10 @@ async function replyForNonOrderIntent(input: {
   if (understanding.intent === "general_chat") {
     return {
       orderId: activeOrder?.id ?? null,
-      reply: generalChatReply(inbound.body),
+      reply: generalChatReply(
+        inbound.body,
+        understanding.customerReplyDraft,
+      ),
       audit: workflowAudit(understanding, null, { flow: "general_chat" }),
     };
   }
@@ -496,7 +533,10 @@ async function replyForPaymentStartedOrder(input: {
   if (understanding.intent === "general_chat") {
     return {
       orderId: activeOrder.id,
-      reply: generalChatReply(inbound.body),
+      reply: generalChatReply(
+        inbound.body,
+        understanding.customerReplyDraft,
+      ),
       audit: workflowAudit(understanding, null, {
         flow: "payment_started_general_chat",
       }),
@@ -635,7 +675,10 @@ function currentFileReply(order: Order): string {
   ].join("\n");
 }
 
-function generalChatReply(body: string): string {
+function generalChatReply(
+  body: string,
+  customerReplyDraft: string | null = null,
+): string {
   const normalized = body.toLowerCase();
   if (
     /\b(do you know about me|who am i|what do you know about me|know me)\b/.test(
@@ -647,7 +690,25 @@ function generalChatReply(body: string): string {
   if (/^(hi|hello|hey|namaste|yo)\b[!. ]*$/.test(normalized.trim())) {
     return "Hi. I can help with PDF print orders, quotes, payment links, order status, and pickup. What would you like to print today?";
   }
+  const draft = customerReplyDraft?.trim();
+  if (draft && isPrintAdviceMessage(normalized) && isSafePrintAdviceDraft(draft)) {
+    return draft;
+  }
   return "I can help with PDF print orders, quotes, payment links, order status, and pickup. Send a PDF or tell me the print details.";
+}
+
+function isPrintAdviceMessage(normalizedBody: string): boolean {
+  return /\b(print(?:ing)?|paper|matte|glossy|finish|laminat(?:e|ion)|gsm|resume|binding|spiral|staple|sheet|pdf|colour|color|black[ -]?and[ -]?white)\b/.test(
+    normalizedBody,
+  );
+}
+
+function isSafePrintAdviceDraft(draft: string): boolean {
+  if (draft.length > 600 || /https?:\/\/|www\./i.test(draft)) return false;
+  if (/\b(pay(?:ment)?|upi|bank account|card number|otp|password)\b/i.test(draft)) {
+    return false;
+  }
+  return true;
 }
 
 function paymentStartedOrderReply(order: Order): string {

@@ -37,6 +37,28 @@ export interface TobiStore {
 }
 
 const emptyOptions = printOptionsSchema.parse({});
+const ACTIVE_PREPAYMENT_ORDER_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+
+const UNBOUNDED_ACTIVE_ORDER_STATUSES: OrderStatus[] = [
+  "PAID",
+  "SHOP_NOTIFIED",
+  "ACCEPTED",
+  "PRINTING",
+  "READY_FOR_PICKUP",
+];
+
+export function isConversationActiveOrder(
+  order: Order,
+  now = new Date(),
+): boolean {
+  if (["COMPLETED", "CANCELLED", "FAILED"].includes(order.status)) {
+    return false;
+  }
+  if (UNBOUNDED_ACTIVE_ORDER_STATUSES.includes(order.status)) return true;
+  const updatedAt = Date.parse(order.updatedAt);
+  if (!Number.isFinite(updatedAt)) return false;
+  return now.getTime() - updatedAt <= ACTIVE_PREPAYMENT_ORDER_MAX_AGE_MS;
+}
 
 export class MemoryTobiStore implements TobiStore {
   private customers = new Map<string, Customer>();
@@ -106,8 +128,11 @@ export class MemoryTobiStore implements TobiStore {
   async findActiveOrder(customerId: string): Promise<Order | null> {
     return (
       Array.from(this.orders.values())
-        .filter((order) => order.customerId === customerId && !["COMPLETED", "CANCELLED", "FAILED"].includes(order.status))
-        .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0] ?? null
+        .filter(
+          (order) =>
+            order.customerId === customerId && isConversationActiveOrder(order),
+        )
+        .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0] ?? null
     );
   }
 
@@ -344,11 +369,14 @@ export class D1TobiStore extends MemoryTobiStore {
   }
 
   override async findActiveOrder(customerId: string): Promise<Order | null> {
+    const recentCutoff = new Date(
+      Date.now() - ACTIVE_PREPAYMENT_ORDER_MAX_AGE_MS,
+    ).toISOString();
     const row = await this.db
       .prepare(
-        `${orderSelectSql()} WHERE orders.customer_id = ?1 AND orders.status NOT IN ('COMPLETED', 'CANCELLED', 'FAILED') ORDER BY orders.updated_at DESC LIMIT 1`
+        `${orderSelectSql()} WHERE orders.customer_id = ?1 AND orders.status NOT IN ('COMPLETED', 'CANCELLED', 'FAILED') AND (orders.status IN ('PAID', 'SHOP_NOTIFIED', 'ACCEPTED', 'PRINTING', 'READY_FOR_PICKUP') OR orders.updated_at >= ?2) ORDER BY orders.updated_at DESC LIMIT 1`
       )
-      .bind(customerId)
+      .bind(customerId, recentCutoff)
       .first<OrderRow>();
     return row ? this.hydrateOrder(row) : null;
   }

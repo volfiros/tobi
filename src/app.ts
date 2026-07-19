@@ -13,6 +13,7 @@ import {
   parseInboundMetaWhatsApp,
   sendMetaWhatsAppInteractiveButtons,
   sendMetaWhatsAppText,
+  sendMetaWhatsAppTypingIndicator,
   verifyMetaSignature,
   verifyMetaWebhookChallenge,
   type WhatsAppProvider,
@@ -316,6 +317,11 @@ async function processInboundWhatsAppMessage(
     ? await store.getOrder(inboundMessage.message.orderId)
     : null;
   const activeOrder = boundOrder ?? (await store.findActiveOrder(customer.id));
+  const aiTypingIndicator = createAiTypingIndicator({
+    env: context.env,
+    provider,
+    inboundMessageId: inbound.providerMessageId,
+  });
   let result;
   try {
     result = await handleInboundWorkflow({
@@ -325,6 +331,7 @@ async function processInboundWhatsAppMessage(
       inboundMessage: inboundMessage.message,
       inbound,
       activeOrder,
+      onAiRequestStart: aiTypingIndicator.start,
       boundOrder,
       skipMediaStorage:
         inboundMessage.message.processingStatus === "failed" && !!boundOrder,
@@ -333,6 +340,7 @@ async function processInboundWhatsAppMessage(
     await store.markMessageProcessed(inboundMessage.message.id, "failed");
     throw error;
   }
+  await aiTypingIndicator.wait();
   if (result.orderId) {
     await store.attachMessageToOrder(
       inboundMessage.message.id,
@@ -371,6 +379,33 @@ async function processInboundWhatsAppMessage(
     audit: result.audit,
     duplicate: false,
     inboundMessageId: inboundMessage.message.id,
+  };
+}
+
+function createAiTypingIndicator(input: {
+  env: Env;
+  provider: WhatsAppProvider;
+  inboundMessageId: string | null;
+}): { start: () => void; wait: () => Promise<void> } {
+  let request: Promise<void> | null = null;
+  const enabled =
+    input.provider === "meta_cloud_api" && Boolean(input.inboundMessageId);
+  return {
+    start() {
+      if (!enabled || request || !input.inboundMessageId) return;
+      request = sendMetaWhatsAppTypingIndicator(
+        input.env,
+        input.inboundMessageId,
+      ).catch(() => {
+        console.error("whatsapp_ai_typing_indicator_failed", {
+          provider: "meta_cloud_api",
+          category: "meta_api",
+        });
+      });
+    },
+    async wait() {
+      await request;
+    },
   };
 }
 

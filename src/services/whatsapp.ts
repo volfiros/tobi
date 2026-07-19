@@ -3,6 +3,8 @@ import type { WorkflowAction } from "./messageWorkflow";
 
 export type WhatsAppProvider = "twilio_sandbox" | "meta_cloud_api";
 
+const META_TYPING_INDICATOR_TIMEOUT_MS = 2_000;
+
 export async function verifyMetaSignature(request: Request, appSecret: string): Promise<boolean> {
   const signature = request.headers.get("x-hub-signature-256");
   if (!signature?.startsWith("sha256=")) return false;
@@ -73,6 +75,38 @@ export async function sendMetaWhatsAppText(env: Env, to: string, body: string): 
     throw new Error(`Meta WhatsApp send failed: ${response.status} ${JSON.stringify(responseBody)}`);
   }
   return responseBody?.messages?.[0]?.id ?? null;
+}
+
+export async function sendMetaWhatsAppTypingIndicator(
+  env: Env,
+  inboundMessageId: string,
+): Promise<void> {
+  if (!env.WHATSAPP_ACCESS_TOKEN || !env.WHATSAPP_PHONE_NUMBER_ID) {
+    throw new Error(
+      "WHATSAPP_ACCESS_TOKEN and WHATSAPP_PHONE_NUMBER_ID are required for Meta WhatsApp typing indicators",
+    );
+  }
+  const version = env.WHATSAPP_GRAPH_API_VERSION ?? "v25.0";
+  const response = await fetch(
+    `https://graph.facebook.com/${version}/${env.WHATSAPP_PHONE_NUMBER_ID}/messages`,
+    {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${env.WHATSAPP_ACCESS_TOKEN}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        messaging_product: "whatsapp",
+        status: "read",
+        message_id: inboundMessageId,
+        typing_indicator: { type: "text" },
+      }),
+      signal: AbortSignal.timeout(META_TYPING_INDICATOR_TIMEOUT_MS),
+    },
+  );
+  if (!response.ok) {
+    throw new Error(`Meta WhatsApp typing indicator failed: ${response.status}`);
+  }
 }
 
 export async function sendMetaWhatsAppInteractiveButtons(

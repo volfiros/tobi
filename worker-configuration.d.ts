@@ -6,8 +6,9 @@ interface Env {
   DEMO_SHOP_NAME: string;
   ADMIN_PIN?: string;
   ADMIN_SESSION_TOKEN?: string;
-  GEMINI_API_KEY?: string;
-  GEMINI_DEFAULT_MODEL?: string;
+  OPENAI_API_KEY?: string;
+  OPENAI_BASE_URL?: string;
+  OPENAI_DEFAULT_MODEL?: string;
   MESSAGE_UNDERSTANDING_MODE?: "rules_first" | "rules_only" | "ai_first";
   RAZORPAY_KEY_ID?: string;
   RAZORPAY_KEY_SECRET?: string;

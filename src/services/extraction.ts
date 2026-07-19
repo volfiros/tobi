@@ -6,29 +6,40 @@ export function extractWithRules(body: string, hasFile = false): PrintOrderExtra
   const pagesPerSheet = extractPagesPerSheet(normalized, hasFile);
   const pageMatch = pagesPerSheet ? null : normalized.match(/(\d+)\s*(page|pages)/);
   const timeMatch = normalized.match(/\b(?:pickup\s+at|at|by)\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b/);
-  const colorMode = /\b(colou?r|color)\b/.test(normalized)
+  const colorMode = isColorRemoval(normalized)
+    ? "black_and_white"
+    : /\b(colou?r|color)\b/.test(normalized) || hasFuzzyPhrase(normalized, ["color", "colour"])
     ? "color"
-    : /\b(bw|b\/w|black|black and white|b&w)\b/.test(normalized)
+    : /\b(bw|b\/w|black|black and white|b&w)\b/.test(normalized) ||
+        hasFuzzyPhrase(normalized, ["black and white"])
       ? "black_and_white"
       : null;
-  const sideMode = /\b(double|duplex|both (?:the )?sides?|two[- ]sided|2[- ]sided|double[- ]sided)\b/.test(normalized)
+  const sideMode = isDoubleSidedRemoval(normalized)
+    ? "single_sided"
+    : isSingleSidedRemoval(normalized)
+      ? "double_sided"
+      : /\b(double|duplex|both (?:the )?sides?|two[- ]sided|2[- ]sided|double[- ]sided|front (?:and|&) back)\b/.test(normalized) ||
+    hasFuzzyPhrase(normalized, ["double", "duplex", "both sides", "double sided", "two sided", "front and back"])
     ? "double_sided"
-    : /\b(single|one[- ]side|1[- ]side|single[- ]sided|one[- ]sided)\b/.test(normalized)
+    : /\b(single|one[- ]side|1[- ]side|single[- ]sided|one[- ]sided)\b/.test(normalized) ||
+        hasFuzzyPhrase(normalized, ["single", "single side", "single sided", "one side", "front only"])
       ? "single_sided"
       : null;
-  const bindingType = /\b(no|without)\s+(?:spiral|binding|bind)\b|\bno binding\b|\bnone\b/.test(normalized)
+  const bindingType = isSpiralRemoval(normalized)
     ? "staple"
-    : /\bspiral\b/.test(normalized)
-      ? "spiral"
-      : /\bstaple\b/.test(normalized)
-        ? "staple"
-        : /\bsoft\b/.test(normalized)
-          ? "soft_bind"
-          : /\bhard\b/.test(normalized)
-            ? "hard_bind"
-            : /\b(bind|binding)\b/.test(normalized)
-              ? "spiral"
-              : null;
+    : isBindingRemoval(normalized)
+      ? "none"
+      : /\bspiral\b/.test(normalized) || hasFuzzyPhrase(normalized, ["spiral"])
+        ? "spiral"
+        : /\bstaple\b/.test(normalized) || hasFuzzyPhrase(normalized, ["staple"])
+          ? "staple"
+          : /\bsoft\b/.test(normalized) || hasFuzzyPhrase(normalized, ["soft bind"])
+            ? "soft_bind"
+            : /\bhard\b/.test(normalized) || hasFuzzyPhrase(normalized, ["hard bind"])
+              ? "hard_bind"
+              : /\b(bind|binding)\b/.test(normalized) || hasFuzzyPhrase(normalized, ["binding"])
+                ? "spiral"
+                : null;
 
   const intent = classifyIntent(normalized, hasFile);
   const pickupTime = timeMatch ? normalizeTime(timeMatch[1], timeMatch[2], timeMatch[3]) : null;
@@ -45,7 +56,7 @@ export function extractWithRules(body: string, hasFile = false): PrintOrderExtra
     copies,
     colorMode,
     sideMode,
-    paperSize: normalized.includes("a3") ? "A3" : normalized.includes("legal") ? "legal" : normalized.includes("letter") ? "letter" : null,
+    paperSize: normalized.includes("a4") ? "A4" : normalized.includes("a3") ? "A3" : normalized.includes("legal") ? "legal" : normalized.includes("letter") ? "letter" : null,
     bindingType,
     pagesPerSheet,
     fulfillmentType: "pickup",
@@ -78,13 +89,84 @@ function extractCopies(normalized: string): number | null {
   const wordMatch = normalized.match(/\b(one|single|two|three|four|five|six|seven|eight|nine|ten)\s*(copy|copies|sets?)\b/);
   if (wordMatch) return words[wordMatch[1]];
 
+  const sizedCopyMatch = normalized.match(
+    /\b(one|single|two|three|four|five|six|seven|eight|nine|ten)\s+(?:a3|a4|legal|letter)(?:\s+size)?\s+(?:copy|copies|sets?)\b/,
+  );
+  if (sizedCopyMatch) return words[sizedCopyMatch[1]];
+
   const conciseAnswer = normalized.trim().match(/^(\d+|one|two|three|four|five|six|seven|eight|nine|ten)$/);
   if (!conciseAnswer) return null;
   const value = conciseAnswer[1];
   return /^\d+$/.test(value) ? Number(value) : words[value];
 }
 
+function isColorRemoval(normalized: string): boolean {
+  return (
+    /\b(?:remove|drop|disable|turn off|no|without|dont|don't|do not|not)\s+(?:the\s+)?colou?r(?:\s+mode)?\b/.test(
+      normalized,
+    ) ||
+    /\b(?:i\s+)?do\s+not\s+want\s+colou?r\b/.test(normalized) ||
+    /\b(?:i\s+)?don'?t\s+want\s+colou?r\b/.test(normalized) ||
+    /\b(?:make|change|switch)\s+(?:it\s+)?(?:to\s+)?(?:bw|b\/w|black\s+and\s+white|b&w)\b/.test(
+      normalized,
+    )
+  );
+}
+
+function isDoubleSidedRemoval(normalized: string): boolean {
+  return (
+    /\b(?:remove|drop|disable|turn off|no|without|dont|don't|do not|not)\s+(?:the\s+)?(?:double|duplex|double[- ]sided|both\s+(?:the\s+)?sides?|front\s+and\s+back)(?:\s+mode)?\b/.test(
+      normalized,
+    ) ||
+    /\b(?:i\s+)?do\s+not\s+want\s+(?:double|duplex|double[- ]sided|both\s+(?:the\s+)?sides?)\b/.test(
+      normalized,
+    ) ||
+    /\b(?:i\s+)?don'?t\s+want\s+(?:double|duplex|double[- ]sided|both\s+(?:the\s+)?sides?)\b/.test(
+      normalized,
+    ) ||
+    /\b(?:only|just)\s+(?:on\s+)?(?:the\s+)?front(?:\s+(?:side|of\s+each\s+sheet))?\b/.test(
+      normalized,
+    )
+  );
+}
+
+function isSingleSidedRemoval(normalized: string): boolean {
+  return (
+    /\b(?:remove|drop|disable|turn off|no|without|dont|don't|do not|not)\s+(?:the\s+)?(?:single|single[- ]sided|one[- ]sided|front\s+only)(?:\s+mode)?\b/.test(
+      normalized,
+    ) ||
+    /\b(?:i\s+)?do\s+not\s+want\s+(?:single|single[- ]sided|one[- ]sided|front\s+only)\b/.test(
+      normalized,
+    ) ||
+    /\b(?:i\s+)?don'?t\s+want\s+(?:single|single[- ]sided|one[- ]sided|front\s+only)\b/.test(
+      normalized,
+    )
+  );
+}
+
+function isSpiralRemoval(normalized: string): boolean {
+  return /\b(?:remove|drop|disable|turn off|no|without|dont|don't|do not|not)\s+(?:the\s+)?spiral(?:\s+(?:bind|binding))?\b/.test(
+    normalized,
+  );
+}
+
+function isBindingRemoval(normalized: string): boolean {
+  return (
+    /\b(?:remove|drop|disable|turn off|no|without|dont|don't|do not|not)\s+(?:the\s+)?(?:binding|bind|staple|stapling)(?:\s+mode)?\b/.test(
+      normalized,
+    ) ||
+    /\b(?:i\s+)?do\s+not\s+want\s+(?:binding|bind|staple|stapling)\b/.test(
+      normalized,
+    ) ||
+    /\b(?:i\s+)?don'?t\s+want\s+(?:binding|bind|staple|stapling)\b/.test(
+      normalized,
+    ) ||
+    /\bnone\b/.test(normalized)
+  );
+}
+
 function extractPagesPerSheet(normalized: string, hasFile: boolean): 1 | 2 | 4 | 6 | 8 | null {
+  if (isLayoutRemoval(normalized)) return 1;
   const nUpValue = "(2|4|6|8|two|four|six|eight)";
   const explicitNUp = normalized.match(new RegExp(`\\b${nUpValue}\\s*[- ]?up\\b`));
   const pagesOnSheet = normalized.match(new RegExp(`\\b${nUpValue}\\s*pages?\\s*(?:on|onto|per|in|into|fit|fitted|printed)\\s*(?:one|1|single|a)?\\s*(?:page|sheet|side)?\\b`));
@@ -97,13 +179,51 @@ function extractPagesPerSheet(normalized: string, hasFile: boolean): 1 | 2 | 4 |
   return null;
 }
 
+function isLayoutRemoval(normalized: string): boolean {
+  return (
+    /\b(?:remove|drop|disable|turn off|no|without|dont|don't|do not|not)\s+(?:the\s+)?(?:layout|[2468][- ]?up|n[- ]?up)(?:\s+mode)?\b/.test(
+      normalized,
+    ) ||
+    /\b(?:normal|regular|default)\s+(?:layout|printing)\b/.test(normalized) ||
+    /\b(?:one|1)\s+(?:page\s+)?(?:per|on|onto)\s+(?:sheet|page|side)\b/.test(
+      normalized,
+    )
+  );
+}
+
 function classifyIntent(normalized: string, hasFile: boolean): PrintOrderExtraction["intent"] {
   if (/\b(cancel|stop|never mind|nevermind)\b/.test(normalized)) return "cancel_order";
   if (/\b(status|where is|ready|done|progress|track)\b/.test(normalized)) return "ask_status";
   if (/\b(how|explain|works?|process)\b.*\b(payment|pay|razorpay|upi)\b|\b(payment|pay|razorpay|upi)\b.*\b(how|explain|works?|process)\b/.test(normalized)) return "other";
   if (/\b(payment|paid|pay|upi|razorpay|link not working|failed)\b/.test(normalized)) return "payment_issue";
-  if (/\b(human|support|help|agent|call me|contact)\b/.test(normalized)) return "human_support";
-  if (hasFile || /\b(print(?:ing)?|pdf|document|file|copy|copies|pages?|binding|spiral|staple|duplex|double[- ]sided|single[- ]sided|one[- ]sided|black and white|b&w|bw|color|colour|pickup)\b/.test(normalized)) {
+  if (
+    /\b(human|support|agent|call me)\b|\bcontact(?: the)? (?:shop|staff|team)\b|\b(?:talk|speak)\b.{0,20}\b(?:person|someone|staff|team)\b/.test(
+      normalized,
+    )
+  ) {
+    return "human_support";
+  }
+  if (
+    hasFile ||
+    /\b(print(?:ing)?|pdf|document|file|copy|copies|pages?|binding|spiral|staple|duplex|double[- ]sided|single[- ]sided|one[- ]sided|black and white|b&w|bw|color|colour|pickup)\b/.test(normalized) ||
+    hasFuzzyPhrase(normalized, [
+      "print",
+      "printing",
+      "copy",
+      "copies",
+      "document",
+      "binding",
+      "spiral",
+      "staple",
+      "duplex",
+      "double sided",
+      "single sided",
+      "black and white",
+      "color",
+      "colour",
+      "pickup",
+    ])
+  ) {
     return hasFile ? "new_print_order" : "provide_order_details";
   }
   if (/\b(quote|price|cost|how much|rate)\b/.test(normalized)) return "ask_quote";
@@ -182,4 +302,65 @@ function normalizeTime(hourText: string, minuteText: string | undefined, meridie
   if (meridiem === "pm" && hour < 12) hour += 12;
   if (meridiem === "am" && hour === 12) hour = 0;
   return `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
+}
+
+function hasFuzzyPhrase(normalized: string, phrases: string[]): boolean {
+  const tokens = normalized.match(/[a-z0-9]+/g) ?? [];
+  return phrases.some((phrase) => fuzzyPhraseMatches(tokens, phrase));
+}
+
+function fuzzyPhraseMatches(tokens: string[], phrase: string): boolean {
+  const phraseTokens = phrase.match(/[a-z0-9]+/g) ?? [];
+  if (phraseTokens.length === 0 || tokens.length < phraseTokens.length) {
+    return false;
+  }
+
+  for (let start = 0; start <= tokens.length - phraseTokens.length; start += 1) {
+    const window = tokens.slice(start, start + phraseTokens.length);
+    if (
+      window.every((token, index) =>
+        fuzzyTokenMatches(token, phraseTokens[index]),
+      )
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function fuzzyTokenMatches(token: string, expected: string): boolean {
+  if (token === expected) return true;
+  if (token.length < 4 || expected.length < 4) return false;
+  if (isAdjacentTransposition(token, expected)) return true;
+  return levenshteinDistance(token, expected) <= (expected.length >= 7 ? 2 : 1);
+}
+
+function isAdjacentTransposition(left: string, right: string): boolean {
+  if (left.length !== right.length) return false;
+  const differences = [];
+  for (let index = 0; index < left.length; index += 1) {
+    if (left[index] !== right[index]) differences.push(index);
+  }
+  return (
+    differences.length === 2 &&
+    differences[1] === differences[0] + 1 &&
+    left[differences[0]] === right[differences[1]] &&
+    left[differences[1]] === right[differences[0]]
+  );
+}
+
+function levenshteinDistance(left: string, right: string): number {
+  const previous = Array.from({ length: right.length + 1 }, (_, index) => index);
+  for (let leftIndex = 0; leftIndex < left.length; leftIndex += 1) {
+    let diagonal = previous[0];
+    previous[0] = leftIndex + 1;
+    for (let rightIndex = 0; rightIndex < right.length; rightIndex += 1) {
+      const insert = previous[rightIndex + 1] + 1;
+      const remove = previous[rightIndex] + 1;
+      const replace = diagonal + (left[leftIndex] === right[rightIndex] ? 0 : 1);
+      diagonal = previous[rightIndex + 1];
+      previous[rightIndex + 1] = Math.min(insert, remove, replace);
+    }
+  }
+  return previous[right.length];
 }

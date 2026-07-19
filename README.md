@@ -4,7 +4,7 @@
 
 Tobi is a WhatsApp-first print-ordering demo for Indian print shops. Customers send a PDF and print instructions in WhatsApp, Tobi uses a hybrid AI understanding layer to interpret the message, asks for missing details, prepares a deterministic quote, sends a Razorpay Test Mode payment link, and updates a shop dashboard when payment is confirmed.
 
-The app is built as a Hono app on Cloudflare Workers with Cloudflare D1, R2, KV, WhatsApp Cloud API webhooks, Gemini message understanding, and Razorpay Test Mode webhooks. Twilio sandbox parsing remains only as a legacy fallback for form-encoded smoke tests.
+The app is built as a Hono app on Cloudflare Workers with Cloudflare D1, R2, KV, WhatsApp Cloud API webhooks, GPT-5.4 mini message understanding through CodeGate, and Razorpay Test Mode webhooks. Twilio sandbox parsing remains only as a legacy fallback for form-encoded smoke tests.
 
 ## Demo Video
 
@@ -17,16 +17,17 @@ https://github.com/user-attachments/assets/06b11db9-f4dc-41f5-aea3-562f63291ea4
 1. A customer messages the WhatsApp Cloud API business number.
 2. Tobi receives the inbound webhook at `/webhooks/whatsapp`.
 3. PDF files are stored in R2 and the PDF page count is treated as authoritative.
-4. Gemini returns structured message understanding: intent, confidence, normalized print slots, ambiguity, and optional general-chat reply.
-5. Backend code validates the understanding and performs all order, file, quote, payment, and state changes.
-6. Tobi asks for missing information one field at a time.
-7. Tobi shows a confirmation summary with pages, copies, layout, sides, pickup time, billable sheets, and total price.
-8. Before payment starts, customers can change details such as "make it color instead" and Tobi recomputes the quote.
-9. The customer taps `Confirm` or `Cancel` when WhatsApp interactive buttons are available, or sends the same words as text.
-10. On confirmation, Tobi creates a Razorpay Test Mode payment link.
-11. Razorpay posts payment events to `/webhooks/razorpay`.
-12. Paid orders appear in the dashboard for shop processing.
-13. The shop updates order status from the dashboard.
+4. Clear messages follow deterministic rules. When a real AI request is needed, WhatsApp shows a typing indicator while Tobi waits for CodeGate.
+5. GPT-5.4 mini returns structured message understanding: intent, confidence, normalized print slots, ambiguity, and optional general-chat reply.
+6. Backend code validates the understanding and performs all order, file, quote, payment, and state changes.
+7. Tobi asks for missing information one field at a time.
+8. Tobi shows a confirmation summary with pages, copies, layout, sides, pickup time, billable sheets, and total price.
+9. Before payment starts, customers can change details such as "make it color instead" and Tobi recomputes the quote.
+10. The customer taps `Confirm` or `Cancel` when WhatsApp interactive buttons are available, or sends the same words as text.
+11. On confirmation, Tobi creates a Razorpay Test Mode payment link.
+12. Razorpay posts payment events to `/webhooks/razorpay`.
+13. Paid orders appear in the dashboard for shop processing.
+14. The shop updates order status from the dashboard.
 
 ## Deployed App
 
@@ -73,7 +74,7 @@ Login is protected by `ADMIN_PIN` and an HTTP-only dashboard session cookie.
 WhatsApp Cloud API
   -> WhatsApp webhook
   -> Hono Worker
-  -> Gemini message understanding
+  -> GPT-5.4 mini message understanding through CodeGate
   -> deterministic backend workflow
   -> D1 orders/messages/payments
   -> R2 PDF storage
@@ -83,7 +84,7 @@ WhatsApp Cloud API
   -> Dashboard
 ```
 
-The AI boundary is intentionally narrow: Gemini interprets print-domain WhatsApp messages, while backend code validates and executes the workflow. Pricing, payment links, PDF storage, PDF page counts, missing-field prompts, and order state transitions are deterministic.
+The AI boundary is intentionally narrow: GPT-5.4 mini interprets print-domain WhatsApp messages, while backend code validates and executes the workflow. Pricing, payment links, PDF storage, PDF page counts, missing-field prompts, and order state transitions are deterministic. Clear instructions are handled by rules first; AI results are cached in KV and provider failures fall back to the deterministic interpretation. The WhatsApp typing indicator is sent only when an actual AI provider request starts, not for rules-only or cached responses.
 
 Examples:
 
@@ -95,8 +96,8 @@ Core storage:
 
 - **D1**: customers, orders, messages, payments, webhook events, order events, pricing rules.
 - **R2**: uploaded PDF files.
-- **KV**: dashboard/session support.
-- **Worker secrets**: Meta WhatsApp, Razorpay, Gemini, dashboard credentials, and optional Twilio fallback credentials.
+- **KV**: AI understanding cache and dashboard/session support.
+- **Worker secrets**: Meta WhatsApp, Razorpay, CodeGate/OpenAI, dashboard credentials, and optional Twilio fallback credentials.
 
 ## Local Development
 
@@ -134,7 +135,7 @@ http://localhost:8787/dashboard/login
 
 ## Environment Variables
 
-Required for the complete WhatsApp Cloud API, Gemini, Razorpay, and dashboard workflow:
+Required for the complete WhatsApp Cloud API, GPT-5.4 mini, Razorpay, and dashboard workflow:
 
 ```text
 APP_ENV
@@ -153,8 +154,9 @@ WHATSAPP_GRAPH_API_VERSION
 RAZORPAY_KEY_ID
 RAZORPAY_KEY_SECRET
 RAZORPAY_WEBHOOK_SECRET
-GEMINI_API_KEY
-GEMINI_DEFAULT_MODEL
+OPENAI_API_KEY
+OPENAI_BASE_URL
+OPENAI_DEFAULT_MODEL
 ```
 
 Optional for the legacy Twilio sandbox fallback:
@@ -165,7 +167,15 @@ TWILIO_AUTH_TOKEN
 TWILIO_WHATSAPP_FROM
 ```
 
-For local testing without external services, some tests use mocks and fixtures. For real WhatsApp and payment testing, WhatsApp Cloud API, Razorpay, and Gemini values are needed. Twilio values are optional and only support the legacy sandbox/form-encoded path.
+For local testing without external services, tests use mocks and fixtures. For real WhatsApp and payment testing, WhatsApp Cloud API, Razorpay, and CodeGate values are needed. Twilio values are optional and only support the legacy sandbox/form-encoded path.
+
+Run the opt-in live AI validation only when `OPENAI_API_KEY` is available in `.dev.vars`:
+
+```bash
+bun run test:ai:live
+```
+
+This makes 90 uncached GPT-5.4 mini requests and enforces structured-output, intent/slot accuracy, critical-flow accuracy, and a five-second p95 latency gate. It is intentionally excluded from `bun test` and CI.
 
 ## Manual Service Setup
 
@@ -259,7 +269,7 @@ bunx wrangler secret put WHATSAPP_VERIFY_TOKEN
 bunx wrangler secret put RAZORPAY_KEY_ID
 bunx wrangler secret put RAZORPAY_KEY_SECRET
 bunx wrangler secret put RAZORPAY_WEBHOOK_SECRET
-bunx wrangler secret put GEMINI_API_KEY
+bunx wrangler secret put OPENAI_API_KEY
 ```
 
 Optional legacy Twilio fallback secrets:
@@ -315,6 +325,7 @@ bun run verify
 The tests cover:
 
 - WhatsApp message handling.
+- AI-only WhatsApp typing indicators and non-blocking indicator failures.
 - General conversation replies.
 - Hybrid AI message understanding.
 - Adaptive print-domain follow-up messages.
@@ -362,6 +373,13 @@ tests/                   Vitest coverage
 assets/                  Product and README assets
 wrangler.toml            Cloudflare Worker bindings and deploy config
 ```
+
+## Project Documentation
+
+- [Original implementation plan](references/tobi_chatbot_implementation_plan.md)
+- [Cloudflare local setup](docs/setup/cloudflare-local.md)
+- [Dashboard design direction](design/README.md)
+- [Demo page design specification](design/demo-page-DESIGN.md)
 
 ## Common Commands
 
