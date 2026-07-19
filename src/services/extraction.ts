@@ -196,8 +196,9 @@ function classifyIntent(normalized: string, hasFile: boolean): PrintOrderExtract
   if (/\b(status|where is|ready|done|progress|track)\b/.test(normalized)) return "ask_status";
   if (/\b(how|explain|works?|process)\b.*\b(payment|pay|razorpay|upi)\b|\b(payment|pay|razorpay|upi)\b.*\b(how|explain|works?|process)\b/.test(normalized)) return "other";
   if (/\b(payment|paid|pay|upi|razorpay|link not working|failed)\b/.test(normalized)) return "payment_issue";
+  if (isSupportedFileQuestion(normalized)) return "other";
   if (
-    /\b(human|support|agent|call me)\b|\bcontact(?: the)? (?:shop|staff|team)\b|\b(?:talk|speak)\b.{0,20}\b(?:person|someone|staff|team)\b/.test(
+    /\b(human|agent|call me|customer support)\b|\bsupport (?:person|agent|team|staff)\b|\b(?:need|want) (?:human )?support\b|\bcontact(?: the)? (?:shop|staff|team)\b|\b(?:talk|speak)\b.{0,20}\b(?:person|someone|staff|team)\b/.test(
       normalized,
     )
   ) {
@@ -273,6 +274,9 @@ function draftGeneralConversationReply(body: string, normalized: string): string
 }
 
 function specificGeneralConversationReply(normalized: string): string | null {
+  if (isSupportedFileQuestion(normalized)) {
+    return "Tobi currently accepts PDF files for print orders. Send the PDF as a document, then add copies, colour, sides, binding, and pickup time.";
+  }
   if (/\b(what do you do|who are you|what can you do|help me with)\b/.test(normalized)) {
     return "I am Tobi, a print-order assistant. I can collect your PDF and print options, prepare a quote, send a test payment link, and help track the order until pickup.";
   }
@@ -294,6 +298,17 @@ function specificGeneralConversationReply(normalized: string): string | null {
   }
 
   return null;
+}
+
+export function isSupportedFileQuestion(normalized: string): boolean {
+  return (
+    /\b(?:what|which|kind|types?|formats?)\b.{0,40}\b(?:files?|documents?|formats?)\b.{0,30}\b(?:support|accept|handle|upload)\b/.test(
+      normalized,
+    ) ||
+    /\b(?:support|accept|handle|upload)\b.{0,30}\b(?:what|which|kind|types?|formats?)?\s*(?:files?|documents?|formats?)\b/.test(
+      normalized,
+    )
+  );
 }
 
 function normalizeTime(hourText: string, minuteText: string | undefined, meridiem: string | undefined): string {

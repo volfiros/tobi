@@ -698,7 +698,7 @@ function generalChatReply(
 }
 
 function isPrintAdviceMessage(normalizedBody: string): boolean {
-  return /\b(print(?:ing)?|paper|matte|glossy|finish|laminat(?:e|ion)|gsm|resume|binding|spiral|staple|sheet|pdf|colour|color|black[ -]?and[ -]?white)\b/.test(
+  return /\b(print(?:ing)?|paper|matte|glossy|finish|laminat(?:e|ion)|gsm|resume|binding|spiral|staple|sheet|pdf|files?|documents?|formats?|colour|color|black[ -]?and[ -]?white)\b/.test(
     normalizedBody,
   );
 }

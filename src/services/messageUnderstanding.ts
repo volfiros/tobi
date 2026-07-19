@@ -5,7 +5,7 @@ import OpenAI, {
 import { zodTextFormat } from "openai/helpers/zod";
 import { z } from "zod";
 import type { PrintOptions } from "../domain";
-import { extractWithRules } from "./extraction";
+import { extractWithRules, isSupportedFileQuestion } from "./extraction";
 
 const MESSAGE_INTENTS = [
   "start_print_order",
@@ -387,7 +387,7 @@ export const AI_UNDERSTANDING_CACHE_TTL_SECONDS = 60 * 60 * 24 * 30;
 export const AI_PROVIDER_DEADLINE_MS = 4_900;
 export const AI_PROVIDER_MINIMUM_RETRY_WINDOW_MS = 500;
 export const AI_PROVIDER_MAX_OUTPUT_TOKENS = 384;
-export const AI_PROMPT_VERSION = 3;
+export const AI_PROMPT_VERSION = 4;
 export const AI_SCHEMA_VERSION = 2;
 
 export function understandWithRules(
@@ -417,6 +417,15 @@ export function understandWithRules(
   }
   if (isWhichFileQuestion(normalized)) {
     return parsedUnderstanding("ask_current_file", 0.88, {}, null, null);
+  }
+  if (isSupportedFileQuestion(normalized)) {
+    return parsedUnderstanding(
+      "general_chat",
+      0.93,
+      {},
+      null,
+      "Tobi currently accepts PDF files for print orders. Send the PDF as a document, then add copies, colour, sides, binding, and pickup time.",
+    );
   }
   if (isUnrelatedQuestion(normalized)) {
     return parsedUnderstanding(
@@ -486,7 +495,7 @@ export function understandWithRules(
     return parsedUnderstanding("payment_help", 0.86, {}, null, null);
   }
   if (
-    /\b(human|support|agent|call me)\b|\bcontact(?: the)? (?:shop|staff|team)\b|\b(?:talk|speak)\b.{0,20}\b(?:person|someone|staff|team)\b/.test(
+    /\b(human|agent|call me|customer support)\b|\bsupport (?:person|agent|team|staff)\b|\b(?:need|want) (?:human )?support\b|\bcontact(?: the)? (?:shop|staff|team)\b|\b(?:talk|speak)\b.{0,20}\b(?:person|someone|staff|team)\b/.test(
       normalized,
     )
   ) {
@@ -568,13 +577,16 @@ Business rules:
 - Use ask_current_file when the customer asks which PDF or file is currently being used (e.g. "which file?", "what document are you printing?").
 - If a PDF exists, PDF page count is authoritative; do not infer pageCount from layout phrases like "four pages per sheet".
 - For unrelated topics, use general_chat and briefly redirect to print-order help.
+- Questions about print materials, finishes, paper, binding, readability, presentation, or option recommendations are in scope. Use general_chat with confidence at least 0.85 and answer the customer's exact question directly in r.
+- For an in-scope advice question, r must give a concrete recommendation or comparison in one or two short sentences. Do not merely say what Tobi can help with. Mention uncertainty or shop stock availability when relevant.
+- For questions about supported upload formats, use general_chat and explain that Tobi currently accepts PDF files sent as documents.
 - A recognized request may be incomplete. Missing print fields are not ambiguity: keep the recognized intent, leave unspecified slots null, and set a=null.
 - Use unclear with a targeted a.q only when the customer's words genuinely have multiple meanings and cannot map safely to an intent or slot. Never attach ambiguity to another intent.
 - Never infer defaults. In particular, "xerox" alone does not specify color, sides, paper, binding, or copies.
 - "front and back", "both side", and writing on the front and back mean double_sided. "Bind like a notebook" means spiral.
 - Use x=specialInstructions only for an explicit instruction that has no dedicated slot. Do not repeat recognized print phrases in x.
 - "Proper binding" without a binding type is unclear; ask which binding type they want.
-- Keep customerReplyDraft brief and limited to the print-order service.
+- Keep customerReplyDraft brief and limited to the print-order service. For in-scope print questions, customerReplyDraft must be a direct, useful answer rather than a capability statement.
 - Return null for every slot that the customer did not specify or change.
 - Classify directly and emit the compact object immediately; do not deliberate or explain.
 

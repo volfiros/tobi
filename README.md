@@ -91,6 +91,8 @@ Examples:
 - `two copies` updates the active order copy count when a PDF/order is already in progress.
 - `make it color instead` updates a pre-payment quote and returns a refreshed confirmation summary.
 - `how much now?` returns a quote when enough details are present, or asks for the next missing detail.
+- `what kind of files do you support?` gets an immediate rules-based answer that Tobi currently accepts PDF documents.
+- `matte or glossy for a text-heavy report?` gets a short, direct recommendation from the AI instead of a generic capability statement.
 
 Core storage:
 

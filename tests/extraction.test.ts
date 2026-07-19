@@ -103,6 +103,13 @@ describe("mock extraction", () => {
     expect(extractWithRules("Can you explain how payment works here?").intent).toBe("other");
   });
 
+  it("answers supported-file questions instead of starting an order", () => {
+    const result = extractWithRules("What kind of files do you support?");
+
+    expect(result.intent).toBe("other");
+    expect(result.customerReplyDraft).toContain("PDF files");
+  });
+
   it("treats four-up instructions as layout instead of PDF page count", () => {
     const extraction = extractWithRules("I want 4 pages printed single-sided.", true);
 

@@ -74,6 +74,40 @@ describe("message understanding", () => {
     });
   });
 
+  it("answers supported-file questions without creating print intent", async () => {
+    const provider = new RuleMessageUnderstandingProvider();
+
+    await expect(
+      provider.understandMessage({
+        body: "What kind of files do you support?",
+        hasPdf: false,
+        activeOrderSummary: null,
+        recentMessages: [],
+        media: [],
+      }),
+    ).resolves.toMatchObject({
+      intent: "general_chat",
+      confidence: 0.93,
+      customerReplyDraft: expect.stringContaining("PDF files"),
+    });
+  });
+
+  it("does not treat the word support as a human handoff by itself", async () => {
+    const provider = new RuleMessageUnderstandingProvider();
+
+    await expect(
+      provider.understandMessage({
+        body: "Do you support glossy paper?",
+        hasPdf: false,
+        activeOrderSummary: null,
+        recentMessages: [],
+        media: [],
+      }),
+    ).resolves.not.toMatchObject({
+      intent: "human_support",
+    });
+  });
+
   it("still recognizes explicit requests for shop staff", async () => {
     const provider = new RuleMessageUnderstandingProvider();
 

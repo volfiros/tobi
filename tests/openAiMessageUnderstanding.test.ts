@@ -58,6 +58,12 @@ describe("OpenAI message understanding", () => {
       expect.objectContaining({ role: "system" }),
       expect.objectContaining({ role: "user" }),
     ]);
+    expect(JSON.stringify(body.input)).toContain(
+      "answer the customer's exact question directly",
+    );
+    expect(JSON.stringify(body.input)).toContain(
+      "Do not merely say what Tobi can help with",
+    );
   });
 
   it("normalizes nullable wire slots into the existing domain contract", async () => {
