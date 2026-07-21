@@ -1817,6 +1817,32 @@ describe("Tobi app", () => {
     expect(html).toContain("Cancel this order?");
     expect(html).not.toContain("Status Controls");
   });
+
+  it("renders order creation and activity timestamps", async () => {
+    const store = new MemoryTobiStore();
+    const app = createApp(store);
+    const customer = await store.upsertCustomer({
+      whatsappNumber: "whatsapp:+919876543212",
+    });
+    const order = await store.createOrder({
+      customerId: customer.id,
+      shopId: "shop_demo",
+    });
+
+    const response = await app.request(`/dashboard/orders/${order.id}`, {
+      headers: { cookie: "tobi_admin=test-session" },
+    }, env);
+    const html = await response.text();
+
+    expect(html).toContain("Order timing");
+    expect(html).toContain("Created");
+    expect(html).toContain("Order received by Tobi");
+    expect(html).toContain("Last activity");
+    expect(html).toContain(`datetime="${order.createdAt}"`);
+    expect(html).toContain(`data-relative-time="${order.updatedAt}"`);
+    expect(html).toContain("Not received yet");
+    expect(html).toContain("Times shown in your local timezone");
+  });
 });
 
 async function hmacSha1Base64(payload: string, secret: string): Promise<string> {

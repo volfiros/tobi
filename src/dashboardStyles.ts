@@ -848,6 +848,132 @@ export const dashboardCss = `
     letter-spacing: 0.06em;
   }
 
+  /* --------------------------- order timing ------------------------- */
+
+  .timing-panel { overflow: hidden; }
+
+  .timing-heading {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    margin-bottom: 18px;
+  }
+  .timing-heading h2 {
+    font-size: 18px;
+    letter-spacing: -0.018em;
+  }
+  .timing-kicker {
+    margin-bottom: 4px;
+    color: var(--text-tertiary);
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.085em;
+    text-transform: uppercase;
+  }
+  .timing-heading-icon {
+    display: grid;
+    place-items: center;
+    width: 36px;
+    height: 36px;
+    border: 1px solid light-dark(oklch(56% 0.20 264 / 25%), oklch(74% 0.14 264 / 25%));
+    border-radius: 11px;
+    background-color: var(--accent-subtle);
+    color: var(--accent);
+  }
+  .timing-heading-icon svg { width: 16px; height: 16px; }
+
+  .timing-list {
+    position: relative;
+    display: grid;
+    gap: 0;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+  .timing-list::before {
+    content: "";
+    position: absolute;
+    top: 23px;
+    bottom: 23px;
+    left: 17px;
+    width: 1px;
+    background-color: var(--line);
+  }
+  .timing-item {
+    position: relative;
+    display: grid;
+    grid-template-columns: 36px minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 11px;
+    min-height: 72px;
+    padding: 10px 0;
+  }
+  .timing-item + .timing-item { border-top: 1px solid var(--line); }
+  .timing-icon {
+    z-index: 1;
+    display: grid;
+    place-items: center;
+    width: 34px;
+    height: 34px;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background-color: var(--panel-raised);
+    color: var(--text-tertiary);
+  }
+  .timing-icon svg { width: 14px; height: 14px; }
+  .timing-copy {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+  }
+  .timing-label {
+    color: var(--text-tertiary);
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.065em;
+    text-transform: uppercase;
+  }
+  .timing-copy strong {
+    margin-top: 1px;
+    overflow: hidden;
+    color: var(--text);
+    font-size: 13.5px;
+    font-weight: 680;
+    letter-spacing: -0.006em;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .timing-description {
+    margin-top: 1px;
+    overflow: hidden;
+    color: var(--text-tertiary);
+    font-size: 11.5px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .timing-relative {
+    align-self: start;
+    margin-top: 15px;
+    border: 1px solid var(--line);
+    border-radius: 9999px;
+    padding: 3px 7px;
+    background-color: var(--bg-tint);
+    color: var(--text-secondary);
+    font-size: 10.5px;
+    font-weight: 650;
+    white-space: nowrap;
+  }
+  .timing-item-empty .timing-icon { opacity: 0.72; }
+  .timing-timezone {
+    margin-top: 10px;
+    padding-top: 12px;
+    border-top: 1px solid var(--line);
+    color: var(--text-tertiary);
+    font-size: 10.5px;
+    text-align: right;
+  }
+
   /* ---------------------------- status track ------------------------- */
 
   .status-track {
@@ -1410,6 +1536,12 @@ export const dashboardCss = `
     .file-list li { flex-direction: column; align-items: stretch; gap: 12px; }
     .download-btn { width: 100%; }
     .status-dialog-actions { grid-template-columns: 1fr; }
+    .timing-item { grid-template-columns: 36px minmax(0, 1fr); }
+    .timing-relative {
+      grid-column: 2;
+      justify-self: start;
+      margin-top: -7px;
+    }
     .track-label { max-width: 58px; font-size: 9.5px; }
     .track-step { min-width: 46px; }
   }

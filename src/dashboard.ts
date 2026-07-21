@@ -437,7 +437,7 @@ function statusControlsHtml(order: Order): string {
   );
   const canCancel = validActions.includes("CANCELLED");
 
-  return `<section class="panel controls-panel ${reveal(2)}" aria-labelledby="status-actions-title">
+  return `<section class="panel controls-panel ${reveal(3)}" aria-labelledby="status-actions-title">
       <p class="status-control-kicker">Current status · ${escapeHtml(readableStatus(order.status))}</p>
       <h2 id="status-actions-title">Next step</h2>
       <p class="status-control-guidance" aria-live="polite">${escapeHtml(
@@ -495,6 +495,84 @@ function statusControlsHtml(order: Order): string {
             </dialog>`
           : ""
       }
+    </section>`;
+}
+
+function timestampHtml(value: string): string {
+  const parsed = new Date(value);
+  const fallback = Number.isNaN(parsed.getTime())
+    ? value
+    : new Intl.DateTimeFormat("en-IN", {
+        dateStyle: "medium",
+        timeStyle: "short",
+        timeZone: "Asia/Kolkata",
+      }).format(parsed);
+
+  return `<time datetime="${escapeAttribute(value)}" data-local-time>${escapeHtml(fallback)}</time>`;
+}
+
+function timingItemHtml(
+  labelText: string,
+  value: string,
+  description: string,
+  icon: string,
+): string {
+  return `<li class="timing-item">
+      <span class="timing-icon">${icon}</span>
+      <div class="timing-copy">
+        <span class="timing-label">${escapeHtml(labelText)}</span>
+        <strong>${timestampHtml(value)}</strong>
+        <span class="timing-description">${escapeHtml(description)}</span>
+      </div>
+      <span class="timing-relative" data-relative-time="${escapeAttribute(value)}"></span>
+    </li>`;
+}
+
+function orderTimingHtml(order: Order): string {
+  const latestFile = [...order.files].sort((a, b) =>
+    b.createdAt.localeCompare(a.createdAt),
+  )[0];
+
+  return `<section class="panel timing-panel ${reveal(2)}" aria-labelledby="order-timing-title">
+      <div class="timing-heading">
+        <div>
+          <p class="timing-kicker">Activity</p>
+          <h2 id="order-timing-title">Order timing</h2>
+        </div>
+        <span class="timing-heading-icon">${ICONS.clock}</span>
+      </div>
+      <ul class="timing-list">
+        ${timingItemHtml(
+          "Created",
+          order.createdAt,
+          "Order received by Tobi",
+          ICONS.inbox,
+        )}
+        ${timingItemHtml(
+          "Last activity",
+          order.updatedAt,
+          "Most recent order change",
+          ICONS.pulse,
+        )}
+        ${
+          latestFile
+            ? timingItemHtml(
+                "Latest file",
+                latestFile.createdAt,
+                latestFile.originalFilename ?? "PDF received",
+                ICONS.file,
+              )
+            : `<li class="timing-item timing-item-empty">
+                <span class="timing-icon">${ICONS.file}</span>
+                <div class="timing-copy">
+                  <span class="timing-label">Latest file</span>
+                  <strong>Not received yet</strong>
+                  <span class="timing-description">Waiting for a PDF upload</span>
+                </div>
+              </li>`
+        }
+      </ul>
+      <p class="timing-timezone">Times shown in your local timezone</p>
     </section>`;
 }
 
@@ -600,6 +678,8 @@ export function orderDetailPage(order: Order): string {
             }
           </div>
         </section>
+
+        ${orderTimingHtml(order)}
 
         ${statusControlsHtml(order)}
       </div>
@@ -713,6 +793,41 @@ export function pageShell(title: string, body: string): string {
               if (event.target === cancelDialog) cancelDialog.close();
             });
           }
+
+          var absoluteFormatter = new Intl.DateTimeFormat(undefined, {
+            dateStyle: "medium",
+            timeStyle: "short"
+          });
+          var relativeFormatter = new Intl.RelativeTimeFormat(undefined, {
+            numeric: "auto"
+          });
+          var relativeUnits = [
+            ["year", 31536000000],
+            ["month", 2592000000],
+            ["week", 604800000],
+            ["day", 86400000],
+            ["hour", 3600000],
+            ["minute", 60000]
+          ];
+          document.querySelectorAll("[data-local-time]").forEach(function (element) {
+            var date = new Date(element.getAttribute("datetime"));
+            if (!Number.isNaN(date.getTime())) {
+              element.textContent = absoluteFormatter.format(date);
+              element.title = date.toISOString();
+            }
+          });
+          document.querySelectorAll("[data-relative-time]").forEach(function (element) {
+            var date = new Date(element.getAttribute("data-relative-time"));
+            if (Number.isNaN(date.getTime())) return;
+            var difference = date.getTime() - Date.now();
+            var unit = relativeUnits.find(function (entry) {
+              return Math.abs(difference) >= entry[1];
+            }) || ["minute", 60000];
+            element.textContent = relativeFormatter.format(
+              Math.round(difference / unit[1]),
+              unit[0]
+            );
+          });
         })();
       </script>
     </body>
