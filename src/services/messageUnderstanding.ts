@@ -427,6 +427,15 @@ export function understandWithRules(
       "Tobi currently accepts PDF files for print orders. Send the PDF as a document, then add copies, colour, sides, binding, and pickup time.",
     );
   }
+  if (isPrintAdviceQuestion(normalized)) {
+    return parsedUnderstanding(
+      "general_chat",
+      0.72,
+      {},
+      null,
+      printAdviceFallback(normalized),
+    );
+  }
   if (isUnrelatedQuestion(normalized)) {
     return parsedUnderstanding(
       "general_chat",
@@ -975,6 +984,34 @@ function isWhichFileQuestion(normalized: string): boolean {
       normalized,
     )
   );
+}
+
+function isPrintAdviceQuestion(normalized: string): boolean {
+  const asksForAdvice =
+    /\b(?:which|what)\b.{0,50}\b(?:best|better|easiest|suitable|recommend(?:ed)?|format|option)\b/.test(
+      normalized,
+    ) ||
+    /\b(?:recommend|suggest|should i (?:use|choose|print)|what would you choose)\b/.test(
+      normalized,
+    );
+  const hasAdviceSubject =
+    /\b(?:lecture|notes?|study|report|resume|portfolio|proposal|paper|finish|matte|glossy|binding|format|layout|pages? per sheet|single[- ]sided|double[- ]sided)\b/.test(
+      normalized,
+    );
+  return asksForAdvice && hasAdviceSubject;
+}
+
+function printAdviceFallback(normalized: string): string {
+  if (/\b(?:lecture|notes?|study)\b/.test(normalized)) {
+    return "For readable lecture notes, use A4 with 1 page per sheet. Choose double-sided to save paper, or single-sided if you want more room for annotations.";
+  }
+  if (/\b(?:matte|glossy|finish)\b/.test(normalized)) {
+    return "For text-heavy documents, matte paper is easier to read because it reduces glare. Use glossy mainly when photos and colour impact matter more than long-form reading.";
+  }
+  if (/\bbinding\b/.test(normalized)) {
+    return "Staple binding suits short documents, while spiral binding is easier to keep open for study notes and frequently used reports.";
+  }
+  return "For a clear, readable document, start with A4 and 1 page per sheet. Double-sided saves paper, while single-sided leaves more room for notes.";
 }
 
 function isAmbiguousReference(normalized: string): boolean {

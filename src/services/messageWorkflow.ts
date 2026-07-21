@@ -206,9 +206,15 @@ export async function handleInboundWorkflow(input: {
       order.id,
       missing === "file" ? "AWAITING_FILE" : "AWAITING_DETAILS",
     );
+    const acknowledgement = savedPrintDetailsReply(
+      order.publicId,
+      validation.accepted,
+    );
     return {
       orderId: order.id,
-      reply: questionForMissingField(missing),
+      reply: [acknowledgement, questionForMissingField(missing)]
+        .filter((part): part is string => Boolean(part))
+        .join(" "),
       audit: workflowAudit(contextualUnderstanding, validation.rejectedReason, {
         flow: "missing_field",
         missing,
@@ -709,6 +715,32 @@ function isSafePrintAdviceDraft(draft: string): boolean {
     return false;
   }
   return true;
+}
+
+function savedPrintDetailsReply(
+  publicOrderId: string,
+  accepted: Partial<PrintOptions>,
+): string | null {
+  const details = [
+    accepted.copies ? `${accepted.copies} ${accepted.copies === 1 ? "copy" : "copies"}` : null,
+    accepted.colorMode === "black_and_white"
+      ? "black-and-white printing"
+      : accepted.colorMode === "color"
+        ? "colour printing"
+        : null,
+    accepted.sideMode === "single_sided"
+      ? "single-sided"
+      : accepted.sideMode === "double_sided"
+        ? "double-sided"
+        : null,
+    accepted.paperSize ? `${accepted.paperSize} paper` : null,
+    accepted.bindingType ? `${accepted.bindingType.replaceAll("_", " ")} binding` : null,
+    accepted.pagesPerSheet ? `${accepted.pagesPerSheet} page${accepted.pagesPerSheet === 1 ? "" : "s"} per sheet` : null,
+    accepted.pickupTime ? `pickup at ${accepted.pickupTime}` : null,
+  ].filter((detail): detail is string => Boolean(detail));
+
+  if (details.length === 0) return null;
+  return `Saved ${details.join(", ")} for order ${publicOrderId}.`;
 }
 
 function paymentStartedOrderReply(order: Order): string {

@@ -1,7 +1,11 @@
 import { handleInboundWorkflow } from "../src/services/messageWorkflow";
 import { MemoryTobiStore } from "../src/store";
 import type { InboundWhatsAppMessage, Message } from "../src/domain";
-import type { MessageUnderstandingProvider } from "../src/services/messageUnderstanding";
+import {
+  RuleFirstMessageUnderstandingProvider,
+  RuleMessageUnderstandingProvider,
+  type MessageUnderstandingProvider,
+} from "../src/services/messageUnderstanding";
 
 const env = {
   APP_ENV: "test",
@@ -54,6 +58,45 @@ describe("message workflow", () => {
     expect(await store.listOrders()).toHaveLength(0);
   });
 
+  it("returns useful lecture advice without creating an order when AI times out", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const store = new MemoryTobiStore();
+    const customer = await store.upsertCustomer({
+      whatsappNumber: "whatsapp:+919900000097",
+    });
+    const inboundMessage = await createInboundMessage(
+      store,
+      customer.id,
+      "I am going to print a lecture which format is the best?",
+    );
+    const timeoutFallbackProvider = new RuleFirstMessageUnderstandingProvider(
+      new RuleMessageUnderstandingProvider(),
+      {
+        async understandMessage() {
+          throw new Error("provider timed out");
+        },
+      },
+    );
+
+    const result = await handleInboundWorkflow({
+      store,
+      env,
+      customer,
+      activeOrder: null,
+      inboundMessage,
+      inbound: inbound(
+        "I am going to print a lecture which format is the best?",
+      ),
+      understandingProvider: timeoutFallbackProvider,
+    });
+
+    expect(result.orderId).toBeNull();
+    expect(result.reply).toContain("A4");
+    expect(result.reply).toContain("1 page per sheet");
+    expect(await store.listOrders()).toHaveLength(0);
+    errorSpy.mockRestore();
+  });
+
   it("updates active order from indirect detail message", async () => {
     const store = new MemoryTobiStore();
     const customer = await store.upsertCustomer({ whatsappNumber: "whatsapp:+919900000001" });
@@ -96,6 +139,46 @@ describe("message workflow", () => {
       { id: "cancel_order", title: "Cancel" },
     ]);
     expect((await store.getOrder(order.id))?.printOptions.colorMode).toBe("color");
+  });
+
+  it("acknowledges a saved detail before asking for the missing PDF", async () => {
+    const store = new MemoryTobiStore();
+    const customer = await store.upsertCustomer({
+      whatsappNumber: "whatsapp:+919900000098",
+    });
+    let order = await store.createOrder({
+      customerId: customer.id,
+      shopId: "shop_demo",
+    });
+    await store.transitionOrder(order.id, "AWAITING_FILE");
+    order = (await store.getOrder(order.id)) ?? order;
+    const inboundMessage = await createInboundMessage(
+      store,
+      customer.id,
+      "I want the pages to be printed on both sides",
+    );
+
+    const result = await handleInboundWorkflow({
+      store,
+      env,
+      customer,
+      activeOrder: order,
+      inboundMessage,
+      inbound: inbound("I want the pages to be printed on both sides"),
+      understandingProvider: provider({
+        intent: "update_order_details",
+        confidence: 0.98,
+        slots: { sideMode: "double_sided" },
+        ambiguity: null,
+        customerReplyDraft: null,
+      }),
+    });
+
+    expect(result.reply).toContain("Saved double-sided");
+    expect(result.reply).toContain("Please send the PDF file");
+    expect((await store.getOrder(order.id))?.printOptions.sideMode).toBe(
+      "double_sided",
+    );
   });
 
   it("requotes quote-ready order after pre-payment edit", async () => {

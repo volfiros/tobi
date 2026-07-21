@@ -92,6 +92,52 @@ describe("message understanding", () => {
     });
   });
 
+  it("treats lecture-format recommendations as advice with a useful fallback", async () => {
+    const result = understandWithRules({
+      body: "I am going to print a lecture which format is the best?",
+      hasPdf: false,
+      activeOrderSummary: null,
+      recentMessages: [],
+      media: [],
+    });
+
+    expect(result).toMatchObject({
+      intent: "general_chat",
+      confidence: 0.72,
+      customerReplyDraft: expect.stringContaining("A4"),
+    });
+    expect(result.confidence < AI_ESCALATION_CONFIDENCE_THRESHOLD).toBe(true);
+  });
+
+  it("keeps the useful lecture-advice fallback when the AI request fails", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    let aiCalls = 0;
+    const provider = new RuleFirstMessageUnderstandingProvider(
+      new RuleMessageUnderstandingProvider(),
+      {
+        async understandMessage() {
+          aiCalls += 1;
+          throw new Error("provider timed out");
+        },
+      },
+    );
+
+    await expect(
+      provider.understandMessage({
+        body: "I am going to print a lecture which format is the best?",
+        hasPdf: false,
+        activeOrderSummary: null,
+        recentMessages: [],
+        media: [],
+      }),
+    ).resolves.toMatchObject({
+      intent: "general_chat",
+      customerReplyDraft: expect.stringContaining("A4"),
+    });
+    expect(aiCalls).toBe(1);
+    errorSpy.mockRestore();
+  });
+
   it("does not treat the word support as a human handoff by itself", async () => {
     const provider = new RuleMessageUnderstandingProvider();
 
