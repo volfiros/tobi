@@ -1788,6 +1788,35 @@ describe("Tobi app", () => {
     expect(html).toContain("Customer Contact");
     expect(html).toContain("whatsapp:+919876543210");
   });
+
+  it("renders one guided next action with secondary status controls", async () => {
+    const store = new MemoryTobiStore();
+    const app = createApp(store);
+    const customer = await store.upsertCustomer({
+      whatsappNumber: "whatsapp:+919876543211",
+    });
+    const order = await store.createOrder({
+      customerId: customer.id,
+      shopId: "shop_demo",
+    });
+    await store.transitionOrder(order.id, "QUOTE_READY");
+    await store.transitionOrder(order.id, "PAYMENT_LINK_SENT");
+    await store.transitionOrder(order.id, "PAID");
+    await store.transitionOrder(order.id, "ACCEPTED");
+
+    const response = await app.request(`/dashboard/orders/${order.id}`, {
+      headers: { cookie: "tobi_admin=test-session" },
+    }, env);
+    const html = await response.text();
+
+    expect(html).toContain("Current status · Accepted");
+    expect(html).toContain("Next step");
+    expect(html).toContain("Start printing");
+    expect(html).toContain("More actions");
+    expect(html).toContain("Mark ready for pickup");
+    expect(html).toContain("Cancel this order?");
+    expect(html).not.toContain("Status Controls");
+  });
 });
 
 async function hmacSha1Base64(payload: string, secret: string): Promise<string> {

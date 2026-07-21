@@ -364,18 +364,141 @@ export function ordersPage(orders: Order[]): string {
     </section>`;
 }
 
-export function orderDetailPage(order: Order): string {
-  const statusActions: OrderStatus[] = [
-    "ACCEPTED",
-    "PRINTING",
-    "READY_FOR_PICKUP",
-    "COMPLETED",
-    "CANCELLED",
-  ];
-  const validStatusActions = statusActions.filter((status) =>
+const STATUS_ACTIONS: OrderStatus[] = [
+  "ACCEPTED",
+  "PRINTING",
+  "READY_FOR_PICKUP",
+  "COMPLETED",
+  "CANCELLED",
+];
+
+const PRIMARY_STATUS_ACTION: Partial<Record<OrderStatus, OrderStatus>> = {
+  PAID: "ACCEPTED",
+  SHOP_NOTIFIED: "ACCEPTED",
+  ACCEPTED: "PRINTING",
+  PRINTING: "READY_FOR_PICKUP",
+  READY_FOR_PICKUP: "COMPLETED",
+};
+
+const STATUS_ACTION_LABELS: Partial<Record<OrderStatus, string>> = {
+  ACCEPTED: "Accept order",
+  PRINTING: "Start printing",
+  READY_FOR_PICKUP: "Mark ready for pickup",
+  COMPLETED: "Confirm pickup",
+  CANCELLED: "Cancel order",
+};
+
+const STATUS_ACTION_GUIDANCE: Record<OrderStatus, string> = {
+  DRAFT: "This order is still being prepared. No shop action is needed yet.",
+  AWAITING_FILE: "This order is waiting for the customer's PDF.",
+  AWAITING_DETAILS: "This order is waiting for print details from the customer.",
+  QUOTE_READY: "The quote is waiting for customer confirmation.",
+  PAYMENT_LINK_SENT: "The payment link has been sent. No shop action is needed yet.",
+  PAYMENT_PENDING: "Payment is being processed. No shop action is needed yet.",
+  PAID: "Review the print details before accepting this order.",
+  SHOP_NOTIFIED: "Review the print details before accepting this order.",
+  ACCEPTED: "Start the job when the printer is running.",
+  PRINTING: "Finish printing, then notify the customer that it is ready.",
+  READY_FOR_PICKUP: "Confirm after the customer collects the order.",
+  COMPLETED: "This order is complete. No further action is needed.",
+  CANCELLED: "This order was cancelled. No further action is available.",
+  FAILED: "Payment needs attention before this order can move forward.",
+};
+
+function readableStatus(status: OrderStatus): string {
+  const value = status.replaceAll("_", " ").toLowerCase();
+  return value.charAt(0).toUpperCase() + value.slice(1);
+}
+
+function statusActionForm(
+  orderId: string,
+  status: OrderStatus,
+  className: string,
+): string {
+  return `<form method="post" action="/dashboard/orders/${escapeAttribute(orderId)}/status">
+      <input type="hidden" name="status" value="${escapeAttribute(status)}" />
+      <button type="submit" class="${className}">${escapeHtml(
+        STATUS_ACTION_LABELS[status] ?? readableStatus(status),
+      )}</button>
+    </form>`;
+}
+
+function statusControlsHtml(order: Order): string {
+  const validActions = STATUS_ACTIONS.filter((status) =>
     canTransition(order.status, status),
   );
+  const primaryStatus = PRIMARY_STATUS_ACTION[order.status];
+  const primaryAction =
+    primaryStatus && validActions.includes(primaryStatus)
+      ? primaryStatus
+      : null;
+  const otherActions = validActions.filter(
+    (status) => status !== primaryAction && status !== "CANCELLED",
+  );
+  const canCancel = validActions.includes("CANCELLED");
 
+  return `<section class="panel controls-panel ${reveal(2)}" aria-labelledby="status-actions-title">
+      <p class="status-control-kicker">Current status · ${escapeHtml(readableStatus(order.status))}</p>
+      <h2 id="status-actions-title">Next step</h2>
+      <p class="status-control-guidance" aria-live="polite">${escapeHtml(
+        STATUS_ACTION_GUIDANCE[order.status],
+      )}</p>
+      ${
+        primaryAction
+          ? statusActionForm(
+              order.id,
+              primaryAction,
+              "status-primary-action",
+            )
+          : ""
+      }
+      ${
+        otherActions.length > 0
+          ? `<details class="status-more-actions">
+              <summary>
+                <span>More actions</span>
+                <span class="status-more-icon" aria-hidden="true">+</span>
+              </summary>
+              <div class="status-more-actions-list">
+                ${otherActions
+                  .map((status) =>
+                    statusActionForm(
+                      order.id,
+                      status,
+                      "status-secondary-action",
+                    ),
+                  )
+                  .join("")}
+              </div>
+            </details>`
+          : ""
+      }
+      ${
+        canCancel
+          ? `<div class="status-danger-zone">
+              <button id="cancel-order-trigger" class="status-cancel-trigger" type="button">Cancel order</button>
+            </div>
+            <dialog id="cancel-order-dialog" class="status-confirm-dialog" aria-labelledby="cancel-order-title" aria-describedby="cancel-order-description">
+              <div class="status-dialog-icon">${ICONS.alert}</div>
+              <h2 id="cancel-order-title">Cancel this order?</h2>
+              <p id="cancel-order-description">The order will stop here. This can’t be undone.</p>
+              <div class="status-dialog-actions">
+                <form method="dialog">
+                  <button id="keep-order-button" class="status-dialog-keep" type="submit" autofocus>Keep order</button>
+                </form>
+                ${statusActionForm(
+                  order.id,
+                  "CANCELLED",
+                  "status-dialog-cancel",
+                )}
+              </div>
+            </dialog>`
+          : ""
+      }
+    </section>`;
+}
+
+export function orderDetailPage(order: Order): string {
   const files = order.files
     .map((file) => {
       const fileIcon = `<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg>`;
@@ -478,30 +601,7 @@ export function orderDetailPage(order: Order): string {
           </div>
         </section>
 
-        <section class="panel controls-panel ${reveal(2)}">
-          <h2>Status Controls</h2>
-          <div class="actions">
-            ${
-              validStatusActions.length > 0
-                ? validStatusActions
-                    .map((status) => {
-                      let btnClass = "";
-                      if (status === "CANCELLED") btnClass = "danger-btn";
-                      else if (
-                        status === "COMPLETED" ||
-                        status === "READY_FOR_PICKUP"
-                      )
-                        btnClass = "success-btn";
-                      return `<form method="post" action="/dashboard/orders/${escapeAttribute(order.id)}/status">
-                          <input type="hidden" name="status" value="${escapeAttribute(status)}" />
-                          <button type="submit" class="${btnClass}">${escapeHtml(status.replaceAll("_", " "))}</button>
-                        </form>`;
-                    })
-                    .join("")
-                : `<p class="muted">No status actions are available for this state.</p>`
-            }
-          </div>
-        </section>
+        ${statusControlsHtml(order)}
       </div>
     </main>`;
 }
@@ -595,6 +695,22 @@ export function pageShell(title: string, body: string): string {
                 if (progress < 1) requestAnimationFrame(step);
               };
               requestAnimationFrame(step);
+            });
+          }
+
+          var cancelTrigger = document.getElementById("cancel-order-trigger");
+          var cancelDialog = document.getElementById("cancel-order-dialog");
+          var keepOrderButton = document.getElementById("keep-order-button");
+          if (cancelTrigger && cancelDialog && typeof cancelDialog.showModal === "function") {
+            cancelTrigger.addEventListener("click", function () {
+              cancelDialog.showModal();
+              if (keepOrderButton) keepOrderButton.focus();
+            });
+            cancelDialog.addEventListener("close", function () {
+              cancelTrigger.focus();
+            });
+            cancelDialog.addEventListener("click", function (event) {
+              if (event.target === cancelDialog) cancelDialog.close();
             });
           }
         })();

@@ -1027,48 +1027,182 @@ export const dashboardCss = `
 
   /* --------------------------- status actions ------------------------ */
 
-  .actions { display: grid; grid-template-columns: repeat(auto-fill, minmax(132px, 1fr)); gap: 10px; }
-  .actions form { margin: 0; width: 100%; }
-  .actions button {
-    width: 100%;
-    min-height: 39px;
-    padding: 8px 12px;
-    font-size: 13px;
-    font-weight: 650;
-    text-transform: capitalize;
-    letter-spacing: 0;
-    background-color: var(--bg-tint);
+  .controls-panel h2 {
+    margin: 0;
     color: var(--text);
-    border: 1px solid var(--line);
+    font-size: 18px;
+    font-weight: 720;
+    letter-spacing: -0.018em;
+  }
+
+  .status-control-kicker {
+    margin-bottom: 6px;
+    color: var(--text-tertiary);
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.085em;
+    text-transform: uppercase;
+  }
+
+  .status-control-guidance {
+    margin: 9px 0 17px;
+    color: var(--text-secondary);
+    font-size: 13px;
+    line-height: 1.5;
+  }
+
+  .controls-panel form { margin: 0; }
+
+  .status-primary-action,
+  .status-secondary-action,
+  .status-dialog-keep,
+  .status-dialog-cancel {
+    width: 100%;
+    min-height: 44px;
+    border-radius: 10px;
+    padding: 9px 14px;
+    font-size: 13px;
+    font-weight: 680;
     box-shadow: none;
   }
-  .actions button:hover {
-    background-color: var(--accent-subtle);
+
+  .status-primary-action {
+    border-color: var(--accent);
+    background-color: var(--accent);
+    color: var(--on-accent);
+  }
+  .status-primary-action:hover {
+    border-color: var(--accent-strong);
+    background-color: var(--accent-strong);
+    color: var(--on-accent);
+    box-shadow: none;
+  }
+
+  .status-more-actions {
+    margin-top: 11px;
+    border-top: 1px solid var(--line);
+  }
+  .status-more-actions summary {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    min-height: 44px;
+    color: var(--text-secondary);
+    cursor: pointer;
+    font-size: 12.5px;
+    font-weight: 650;
+    list-style: none;
+    user-select: none;
+  }
+  .status-more-actions summary::-webkit-details-marker { display: none; }
+  .status-more-actions summary:hover { color: var(--text); }
+  .status-more-icon {
+    color: var(--text-tertiary);
+    font-size: 18px;
+    font-weight: 450;
+    line-height: 1;
+    transition: transform 0.22s var(--ease-spring);
+  }
+  .status-more-actions[open] .status-more-icon { transform: rotate(45deg); }
+  .status-more-actions-list {
+    display: grid;
+    gap: 8px;
+    padding-bottom: 11px;
+  }
+  .status-secondary-action {
+    border-color: var(--line);
+    background-color: var(--bg-tint);
+    color: var(--text);
+  }
+  .status-secondary-action:hover {
     border-color: light-dark(oklch(56% 0.20 264 / 45%), oklch(74% 0.14 264 / 40%));
+    background-color: var(--accent-subtle);
     color: var(--accent);
     box-shadow: none;
   }
 
-  .actions button.success-btn {
-    background-color: var(--green-bg);
-    color: var(--green-text);
-    border-color: var(--green-line);
+  .status-danger-zone {
+    margin-top: 3px;
+    padding-top: 12px;
+    border-top: 1px solid var(--line);
   }
-  .actions button.success-btn:hover {
-    background-color: light-dark(oklch(92% 0.07 145), oklch(29% 0.075 145));
-    color: var(--green-text);
-    border-color: var(--green-text);
+  .status-cancel-trigger {
+    min-height: 44px;
+    padding: 0 2px;
+    border: 0;
+    background: transparent;
+    color: var(--red-text);
+    font-size: 12.5px;
+    font-weight: 650;
+    box-shadow: none;
+  }
+  .status-cancel-trigger:hover {
+    background: transparent;
+    color: var(--red-text);
+    box-shadow: none;
+    text-decoration: underline;
+    text-underline-offset: 3px;
   }
 
-  .actions button.danger-btn {
+  .status-confirm-dialog {
+    width: min(420px, calc(100% - 28px));
+    border: 1px solid var(--line-strong);
+    border-radius: 18px;
+    padding: 22px;
+    background-color: var(--panel-raised);
+    color: var(--text);
+    box-shadow: var(--shadow-lg);
+  }
+  .status-confirm-dialog::backdrop {
+    background-color: oklch(10% 0.015 260 / 48%);
+    -webkit-backdrop-filter: blur(5px);
+    backdrop-filter: blur(5px);
+  }
+  .status-dialog-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 34px;
+    height: 34px;
+    margin-bottom: 14px;
+    border: 1px solid var(--red-line);
+    border-radius: 10px;
     background-color: var(--red-bg);
     color: var(--red-text);
-    border-color: var(--red-line);
   }
-  .actions button.danger-btn:hover {
-    background-color: light-dark(oklch(92% 0.07 24), oklch(29% 0.075 24));
-    color: var(--red-text);
+  .status-confirm-dialog h2 { font-size: 20px; }
+  .status-confirm-dialog > p {
+    margin: 8px 0 20px;
+    color: var(--text-secondary);
+    font-size: 13.5px;
+    line-height: 1.5;
+  }
+  .status-dialog-actions {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+  }
+  .status-dialog-keep {
+    border-color: var(--line);
+    background-color: var(--bg-tint);
+    color: var(--text);
+  }
+  .status-dialog-keep:hover {
+    border-color: var(--line-strong);
+    background-color: var(--accent-subtle);
+    color: var(--text);
+  }
+  .status-dialog-cancel {
     border-color: var(--red-text);
+    background-color: var(--red-text);
+    color: var(--panel);
+  }
+  .status-dialog-cancel:hover {
+    border-color: var(--red-text);
+    background-color: var(--red-text);
+    color: var(--panel);
+    filter: brightness(0.94);
   }
 
   /* ---------------------------- status pills ------------------------- */
@@ -1250,7 +1384,6 @@ export const dashboardCss = `
     table { font-size: 13px; }
     th, td { padding: 12px 14px; }
     .print-options-list { grid-template-columns: 108px 1fr; }
-    .actions { grid-template-columns: repeat(2, 1fr); }
   }
 
   @media (max-width: 580px) {
@@ -1276,7 +1409,7 @@ export const dashboardCss = `
     td.actions-cell { justify-content: flex-end; margin-top: 8px; }
     .file-list li { flex-direction: column; align-items: stretch; gap: 12px; }
     .download-btn { width: 100%; }
-    .actions { grid-template-columns: 1fr; }
+    .status-dialog-actions { grid-template-columns: 1fr; }
     .track-label { max-width: 58px; font-size: 9.5px; }
     .track-step { min-width: 46px; }
   }
